@@ -1,0 +1,8 @@
+ipykernel
+notebook 
+numpy
+onnx
+onnxruntime 
+opencv-python
+torch
+torchvision
