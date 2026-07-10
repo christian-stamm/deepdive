@@ -1,4 +1,4 @@
-FROM nvidia/cuda:13.3.0-cudnn-devel-ubuntu24.04
+FROM nvidia/cuda:13.0.0-cudnn-devel-ubuntu24.04
 
 ENV GIT_SSL_NO_VERIFY=1
 ENV DEBIAN_FRONTEND=noninteractive
