@@ -1,40 +1,23 @@
-from __future__ import annotations
-
-from dataclasses import dataclass
-
-import torch
+from collections import defaultdict
 
 
-@dataclass(slots=True)
-class EpochMetrics:
-    loss: float
-    accuracy: float
+class MetricTracker:
 
-    def __str__(self) -> str:
-        return f"loss={self.loss:.4f}, acc={self.accuracy:.4f}"
+    def __init__(self):
+        self.reset()
 
+    def reset(self):
+        self.values = defaultdict(float)
+        self.count = 0
 
-class ClassificationMeter:
-    """Accumulates loss and accuracy over one full epoch."""
+    def update(
+        self,
+        metrics: dict[str, float],
+    ):
+        for key, value in metrics.items():
+            self.values[key] += float(value)
 
-    def __init__(self) -> None:
-        self.total_loss = 0.0
-        self.total_correct = 0
-        self.total_samples = 0
+        self.count += 1
 
-    def update(self, loss: torch.Tensor, logits: torch.Tensor, targets: torch.Tensor) -> None:
-        batch_size = targets.size(0)
-        predictions = logits.argmax(dim=1)
-
-        self.total_loss += float(loss.detach().item()) * batch_size
-        self.total_correct += int((predictions == targets).sum().item())
-        self.total_samples += batch_size
-
-    def compute(self) -> EpochMetrics:
-        if self.total_samples == 0:
-            raise RuntimeError("Cannot compute metrics without samples.")
-
-        return EpochMetrics(
-            loss=self.total_loss / self.total_samples,
-            accuracy=self.total_correct / self.total_samples,
-        )
+    def compute(self):
+        return {key: value / self.count for key, value in self.values.items()}

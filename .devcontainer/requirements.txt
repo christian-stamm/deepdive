@@ -1,8 +1,11 @@
+hydra-core
 ipykernel
-notebook 
+notebook
 numpy
 onnx
-onnxruntime 
+onnxruntime
 opencv-python
+pydantic
 torch
 torchvision
+tqdm
