@@ -1,11 +1,17 @@
 hydra-core
 ipykernel
+ipywidgets
+lightning
+litlogger
 notebook
 numpy
 onnx
 onnxruntime
 opencv-python
 pydantic
+tensorboard
 torch
+torchinfo
 torchvision
+torchmetrics
 tqdm

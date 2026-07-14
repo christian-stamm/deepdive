@@ -1,10 +1,9 @@
-from __future__ import annotations
-
 import json
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
 import torch
+from torchvision import transforms
 
 
 @dataclass(frozen=True)
@@ -13,29 +12,27 @@ class Config:
     seed: int = 42
 
     # Model
-    model_depth: int = 1
-    kernel_depth: int = 16
-    kernel_size: int = 3
+    layer_depth: int = 2
+    kernel_depth: int = 8
 
-    # Optimization
-    epochs: int = 50
+    # Data
+    dataset_rootdir: Path = Path("data/datasets")
+    dataset_shuffle: bool = True
+    dataset_transform: torch.nn.Module = transforms.ToTensor()
+
+    # Runtime
+    num_workers: int = 4
+
+    # Training
+    epochs: int = 10
     batch_size: int = 64
-    use_amp: bool = True
     learning_rate: float = 5e-4
     weight_decay: float = 0.0
 
-    # Runtime
-    num_workers: int = 2
-    use_amp: bool = True
-
     # Artifacts
-    checkpoint_savedir: Path = Path("data/checkpoints")
+    checkpoint_rootdir: Path = Path("data/checkpoints")
     checkpoint_interval: int = 1
     checkpoint_restore: str = "last"
-
-    @property
-    def device(self) -> torch.device:
-        return torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     def __str__(self) -> str:
         return "Config " + repr(self)

@@ -1,11 +1,13 @@
 .cache/*
 .venv/*
 res/*
+data/*
 
 */build/*
 */install/*
 */log/*
 */tmp/*
+
 */__pycache__/*
 
 *.log
