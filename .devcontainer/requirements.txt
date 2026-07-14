@@ -10,6 +10,7 @@ onnxruntime
 opencv-python
 pydantic
 tensorboard
+tensorflow
 torch
 torchinfo
 torchvision

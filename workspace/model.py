@@ -89,12 +89,6 @@ class MNISTClassifier(ClassifierNet):
             nn.Flatten(),
             nn.Linear(
                 feature_shape[1] * feature_shape[2] * feature_shape[3],
-                128,
-            ),
-            nn.LeakyReLU(),
-            nn.Dropout(0.3),
-            nn.Linear(
-                128,
                 10,
             ),
         )
