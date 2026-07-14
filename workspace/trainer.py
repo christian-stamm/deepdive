@@ -1,53 +1,100 @@
-from config import Config
-from history import TrainingHistory
-from torch import nn, optim
+from abc import abstractmethod
+
+import torch
+import random
+from typing import Callable
+
+from workspace.checkpoint import Checkpointer
+
+from .callback import Callback
+from .state import State
+from .config import Config
+from torch.utils.data import DataLoader
+from tqdm import trange
+
+
+@abstractmethod
+def train_epoch(
+    config: Config,
+    state: State,
+    trainloader: DataLoader,
+) -> dict[str, float]:
+    pass
+
+
+@abstractmethod
+def val_epoch(
+    config: Config,
+    state: State,
+    valloader: DataLoader,
+) -> dict[str, float]:
+    pass
 
 
 class Trainer:
 
     def __init__(
         self,
-        model: nn.Module,
-        optimizer: optim.Optimizer,
-        scheduler: optim.lr_scheduler.LRScheduler | None,
-        criterion: nn.Module,
-        train_step,
-        val_step,
         config: Config,
-        callbacks=None,
+        state: State,
+        train_epoch_fn: Callable = train_epoch,
+        val_epoch_fn: Callable = val_epoch,
+        callbacks: list[Callback] | None = None,
     ):
         self.config = config
-        self.model = model
-        self.optimizer = optimizer
-        self.scheduler = scheduler
-        self.criterion = criterion
+        self.state = state.to(config.device)
+        self.seed_everything(config.seed)
 
-        self.train_step = train_step
-        self.val_step = val_step
+        self._train_epoch = train_epoch_fn
+        self._val_epoch = val_epoch_fn
+        self._callbacks = callbacks if callbacks else []
 
-        self.callbacks = callbacks or []
-        self.history = TrainingHistory()
+        self._callbacks.append(
+            Checkpointer(
+                directory=config.checkpoint_savedir,
+                interval=config.checkpoint_interval,
+                restore=config.checkpoint_restore,
+                device=config.device,
+            )
+        )
 
-    def fit(
-        self,
-        trainloader,
-        valloader,
-        epochs,
-    ):
+    def seed_everything(self, seed: int) -> None:
+        random.seed(seed)
+        torch.manual_seed(seed)
+        torch.cuda.manual_seed_all(seed)
+        torch.backends.cudnn.benchmark = False
+        torch.backends.cudnn.deterministic = True
 
-        for epoch in range(epochs):
+    def fit(self, trainloader: DataLoader, valloader: DataLoader, epochs: int):
+        progress_bar = trange(epochs, desc="Training", unit="epoch", leave=True)
 
-            self.history.epoch = epoch
-            train_metrics = self.train_epoch(trainloader)
-            val_metrics = self.validate(valloader)
+        for epoch in progress_bar:
+            self.state.epoch = epoch
 
-            self.history.train.append(train_metrics)
-            self.history.val.append(val_metrics)
+            for callback in self._callbacks:
+                callback.on_epoch_begin(self.state)
+                callback.on_train_begin(self.state)
 
-            kill_request = False
-            for callback in self.callbacks:
-                kill_request |= callback.on_epoch_end(self)
+            train_metrics = self._train_epoch(self.config, self.state, trainloader)
+            self.state.history.train.append(train_metrics)
 
-            if kill_request:
-                print("Training stopped by callback request.")
-                break
+            for callback in self._callbacks:
+                callback.on_train_end(self.state)
+                callback.on_val_begin(self.state)
+
+            val_metrics = self._val_epoch(self.config, self.state, valloader)
+            self.state.history.val.append(val_metrics)
+
+            if val_metrics <= self.state.score:
+                self.state.score = val_metrics
+
+            for callback in self._callbacks:
+                callback.on_val_end(self.state)
+                callback.on_epoch_end(self.state)
+
+            progress_bar.set_postfix(
+                {
+                    "train_loss": train_metrics,
+                    "val_loss": val_metrics,
+                }
+            )

@@ -10,10 +10,7 @@ class MetricTracker:
         self.values = defaultdict(float)
         self.count = 0
 
-    def update(
-        self,
-        metrics: dict[str, float],
-    ):
+    def update(self, metrics: dict[str, float]):
         for key, value in metrics.items():
             self.values[key] += float(value)
 
