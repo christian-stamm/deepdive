@@ -1,0 +1,13 @@
+# Production profile: higher throughput settings.
+runtime:
+  num_workers: 8
+  pin_memory: true
+
+data:
+  batch_size: 2048
+
+training:
+  epochs: 20
+
+logging:
+  level: INFO

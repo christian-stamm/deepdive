@@ -1,5 +1,4 @@
 from abc import abstractmethod
-from pathlib import Path
 
 import lightning.pytorch as pl
 import torch
@@ -17,7 +16,6 @@ class DataModule(pl.LightningDataModule):
 
     def setup(self, stage: str | None = None) -> None:
         if stage in (None, "fit"):
-            path = self.config.dataset_rootdir
             self.train_ds = self._build_trainset()
             self.val_ds = self._build_valset()
 
@@ -39,14 +37,14 @@ class DataModule(pl.LightningDataModule):
         if dataset is None:
             raise RuntimeError("Call setup('fit') before requesting a dataloader.")
 
-        workers = self.config.num_workers
-        persistent = workers > 0
+        workers = self.config.runtime.num_workers
+        persistent = 0 < workers
 
         return DataLoader(
             dataset,
-            batch_size=self.config.batch_size,
+            batch_size=self.config.data.batch_size,
             shuffle=shuffle,
             num_workers=workers,
-            pin_memory=torch.cuda.is_available(),
+            pin_memory=self.config.runtime.pin_memory and torch.cuda.is_available(),
             persistent_workers=persistent,
         )

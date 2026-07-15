@@ -7,16 +7,16 @@ class MNISTDataset(DataModule):
 
     def _build_trainset(self) -> MNIST:
         return MNIST(
-            root=self.config.dataset_rootdir,
+            root=self.config.data.rootdir,
             train=True,
             download=True,
-            transform=self.config.dataset_transform,
+            transform=self.config.data.transform,
         )
 
     def _build_valset(self) -> MNIST:
         return MNIST(
-            root=self.config.dataset_rootdir,
+            root=self.config.data.rootdir,
             train=False,
             download=True,
-            transform=self.config.dataset_transform,
+            transform=self.config.data.transform,
         )
