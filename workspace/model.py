@@ -9,18 +9,10 @@ class MultiScaleBlock(nn.Module):
     def __init__(self, in_channels, out_channels):
         super().__init__()
 
-        c = out_channels // 4
+        c = out_channels // 2
 
         self.branches = nn.ModuleList(
             [
-                nn.Sequential(
-                    nn.Conv2d(in_channels, c, 1, padding=0),
-                    nn.LeakyReLU(inplace=True),
-                ),
-                nn.Sequential(
-                    nn.Conv2d(in_channels, c, 1, padding=0),
-                    nn.LeakyReLU(inplace=True),
-                ),
                 nn.Sequential(
                     nn.Conv2d(in_channels, c, 1, padding=0),
                     nn.LeakyReLU(inplace=True),
@@ -51,6 +43,22 @@ class MultiScaleBlock(nn.Module):
         return x
 
 
+class DenseBlock(nn.Module):
+
+    def __init__(self, in_channels, out_channels):
+        super().__init__()
+
+        self.linear = nn.Sequential(
+            nn.Flatten(),
+            nn.Linear(in_channels, out_channels),
+            nn.LeakyReLU(inplace=True),
+        )
+
+    def forward(self, x):
+        x = self.linear(x)
+        return x
+
+
 class MNISTClassifier(ClassifierNet):
 
     def __init__(
@@ -70,29 +78,15 @@ class MNISTClassifier(ClassifierNet):
             lr_scheduler_gamma,
         )
 
-        layers = []
-        in_channels = 1
-        channels = kernel_depth
-
-        for _ in range(layer_depth):
-
-            layers.append(MultiScaleBlock(in_channels, channels))
-            in_channels = channels * 2
-            channels *= 2
-
-        self.features = nn.Sequential(*layers)
-
-        with torch.no_grad():
-            feature_shape = self.features(torch.zeros(1, 1, 28, 28)).shape
-
-        self.classifier = nn.Sequential(
-            nn.Flatten(),
-            nn.Linear(
-                feature_shape[1] * feature_shape[2] * feature_shape[3],
-                10,
-            ),
+        self.features = nn.Sequential(
+            DenseBlock(1 * 28 * 28, 128),
+            DenseBlock(128, 64),
+            DenseBlock(64, 32),
         )
+
+        self.classifier = nn.Linear(32, 10)
 
     def forward(self, x):
         x = self.features(x)
-        return self.classifier(x)
+        x = self.classifier(x)
+        return x

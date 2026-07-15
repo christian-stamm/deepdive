@@ -78,9 +78,9 @@ class ClassifierNet(pl.LightningModule):
 
         return {
             "optimizer": self.optimizer,
-            "lr_scheduler": {
-                "scheduler": self.scheduler,
-                "interval": "epoch",
-                "frequency": 1,
-            },
+            # "lr_scheduler": {
+            #     "scheduler": self.scheduler,
+            #     "interval": "epoch",
+            #     "frequency": 1,
+            # },
         }

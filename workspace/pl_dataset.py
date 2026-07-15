@@ -2,6 +2,7 @@ from abc import abstractmethod
 from pathlib import Path
 
 import lightning.pytorch as pl
+import torch
 from torch.utils.data import DataLoader, Dataset
 
 from .config import Config
@@ -21,10 +22,10 @@ class DataModule(pl.LightningDataModule):
             self.val_ds = self._build_valset()
 
     def train_dataloader(self) -> DataLoader:
-        return self._build_dloader(self.train_ds)
+        return self._build_dloader(self.train_ds, shuffle=True)
 
     def val_dataloader(self) -> DataLoader:
-        return self._build_dloader(self.val_ds)
+        return self._build_dloader(self.val_ds, shuffle=False)
 
     @abstractmethod
     def _build_trainset(self) -> Dataset:
@@ -34,7 +35,7 @@ class DataModule(pl.LightningDataModule):
     def _build_valset(self) -> Dataset:
         raise NotImplementedError("Subclasses must implement _build_valset")
 
-    def _build_dloader(self, dataset: Dataset) -> DataLoader:
+    def _build_dloader(self, dataset: Dataset, shuffle: bool = False) -> DataLoader:
         if dataset is None:
             raise RuntimeError("Call setup('fit') before requesting a dataloader.")
 
@@ -44,8 +45,8 @@ class DataModule(pl.LightningDataModule):
         return DataLoader(
             dataset,
             batch_size=self.config.batch_size,
-            shuffle=self.config.dataset_shuffle,
+            shuffle=shuffle,
             num_workers=workers,
-            pin_memory=True,
+            pin_memory=torch.cuda.is_available(),
             persistent_workers=persistent,
         )

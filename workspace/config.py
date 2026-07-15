@@ -17,7 +17,6 @@ class Config:
 
     # Data
     dataset_rootdir: Path = Path("data/datasets")
-    dataset_shuffle: bool = True
     dataset_transform: torch.nn.Module = transforms.ToTensor()
 
     # Runtime
