@@ -1,9 +1,0 @@
-# Development profile: fast iteration with lower worker pressure.
-runtime:
-  num_workers: 2
-
-data:
-  batch_size: 512
-
-logging:
-  level: DEBUG

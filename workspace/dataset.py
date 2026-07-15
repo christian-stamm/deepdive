@@ -1,4 +1,5 @@
 from torchvision.datasets.mnist import MNIST
+from torchvision.transforms import ToTensor
 
 from .pl_dataset import DataModule
 
@@ -10,7 +11,7 @@ class MNISTDataset(DataModule):
             root=self.config.data.rootdir,
             train=True,
             download=True,
-            transform=self.config.data.transform,
+            transform=ToTensor(),
         )
 
     def _build_valset(self) -> MNIST:
@@ -18,5 +19,5 @@ class MNISTDataset(DataModule):
             root=self.config.data.rootdir,
             train=False,
             download=True,
-            transform=self.config.data.transform,
+            transform=ToTensor(),
         )

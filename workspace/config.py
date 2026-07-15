@@ -28,12 +28,13 @@ class RuntimeConfig(StrictModel):
     pin_memory: bool = True
     num_workers: int = Field(default=0, ge=0)
     device: str = "cuda" if torch.cuda.is_available() else "cpu"
-    version: str = Field(default=torch.__version__, const=True)
+    version: str = Field(default=torch.__version__)
 
     @model_validator(mode="after")
     def _normalize(self) -> "RuntimeConfig":
-        self.max_worker = max(0, (os.cpu_count() or 1) - 1)
-        self.num_workers = min(self.num_workers, self.max_worker)
+        max_worker = max(0, (os.cpu_count() or 1) - 1)
+        num_workers = min(self.num_workers, max_worker)
+        self.num_workers = num_workers
         return self
 
 
