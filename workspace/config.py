@@ -12,8 +12,8 @@ class Config:
     seed: int = 42
 
     # Model
-    layer_depth: int = 2
-    kernel_depth: int = 8
+    layer_depth: int = 3
+    kernel_depth: int = 64
 
     # Data
     dataset_rootdir: Path = Path("data/datasets")
@@ -24,7 +24,7 @@ class Config:
 
     # Training
     epochs: int = 10
-    batch_size: int = 64
+    batch_size: int = 2048
     learning_rate: float = 5e-4
     weight_decay: float = 0.0
 

@@ -36,7 +36,7 @@ class ClassifierNet(pl.LightningModule):
             f"{stage}_loss",
             loss,
             prog_bar=True,
-            on_step=False,
+            on_step=True,
             on_epoch=True,
             batch_size=batch_size,
         )
@@ -78,9 +78,9 @@ class ClassifierNet(pl.LightningModule):
 
         return {
             "optimizer": self.optimizer,
-            # "lr_scheduler": {
-            #     "scheduler": self.scheduler,
-            #     "interval": "epoch",
-            #     "frequency": 1,
-            # },
+            "lr_scheduler": {
+                "scheduler": self.scheduler,
+                "interval": "epoch",
+                "frequency": 1,
+            },
         }
