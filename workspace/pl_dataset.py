@@ -42,7 +42,7 @@ class DataModule(pl.LightningDataModule):
 
         return DataLoader(
             dataset,
-            batch_size=self.config.data.batch_size,
+            batch_size=self.config.training.batch_size,
             shuffle=shuffle,
             num_workers=workers,
             pin_memory=self.config.runtime.pin_memory and torch.cuda.is_available(),

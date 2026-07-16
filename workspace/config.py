@@ -32,9 +32,9 @@ class RuntimeConfig(StrictModel):
 
     @model_validator(mode="after")
     def _normalize(self) -> "RuntimeConfig":
+        num_workers = self.num_workers
         max_worker = max(0, (os.cpu_count() or 1) - 1)
-        num_workers = min(self.num_workers, max_worker)
-        self.num_workers = num_workers
+        self.num_workers = min(num_workers, max_worker)
         return self
 
 
