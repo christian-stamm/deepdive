@@ -91,22 +91,107 @@ class OpenPilotStylePlanner(nn.Module):
 
 # --- Quick Verification Test Loop ---
 if __name__ == "__main__":
-    # Model Hyperparameters
-    B, T, C, H, W = 4, 10, 3, 224, 224  # Batch size 4, 10-frame past context history
+    # # Model Hyperparameters
+    # B, T, C, H, W = 4, 10, 3, 224, 224  # Batch size 4, 10-frame past context history
 
-    # Initialize the End-to-End network
-    model = OpenPilotStylePlanner(future_steps=20)
-    model.eval()  # Set to evaluation mode
+    # # Initialize the End-to-End network
+    # model = OpenPilotStylePlanner(future_steps=20)
+    # model.eval()  # Set to evaluation mode
 
-    # Generate mock tensors simulating camera inputs and car CAN bus speeds
-    dummy_video = torch.randn(B, T, C, H, W)
-    dummy_kinematics = torch.randn(B, T, 2)  # Simulating (velocity, steering angle)
+    # # Generate mock tensors simulating camera inputs and car CAN bus speeds
+    # dummy_video = torch.randn(B, T, C, H, W)
+    # dummy_kinematics = torch.randn(B, T, 2)  # Simulating (velocity, steering angle)
 
-    # Compute output path
-    with torch.no_grad():
-        trajectory = model(dummy_video, dummy_kinematics)
+    # # Compute output path
+    # with torch.no_grad():
+    #     trajectory = model(dummy_video, dummy_kinematics)
 
-    print(f"Input Video Batch Shape: {dummy_video.shape}")
-    print(
-        f"Generated Future Trajectory Shape: {trajectory.shape} -> [Batch, Steps, (X,Y)]"
-    )
+    # print(f"Input Video Batch Shape: {dummy_video.shape}")
+    # print(
+    #     f"Generated Future Trajectory Shape: {trajectory.shape} -> [Batch, Steps, (X,Y)]"
+    # )
+
+    ############################################################################################################
+    ############################################################################################################
+    ############################################################################################################
+
+    # from collections import Counter, defaultdict
+
+    # import onnx
+
+    # model = onnx.load("data/driving_supercombo.onnx")
+    # graph = model.graph
+
+    # print("Inputs:")
+    # for x in graph.input:
+    #     print(" ", x.name)
+
+    # print("\nOutputs:")
+    # for x in graph.output:
+    #     print(" ", x.name)
+
+    # print("\nInitializers / weights:", len(graph.initializer))
+    # for w in graph.initializer[:20]:
+    #     print(" ", w.name, list(w.dims), w.data_type)
+
+    # print("\nOperator histogram:")
+    # ops = Counter(n.op_type for n in graph.node)
+    # for op, c in ops.most_common():
+    #     print(f"{op:24s} {c}")
+
+    # print("\nPossible transformer-related nodes:")
+    # for i, n in enumerate(graph.node):
+    #     if n.op_type in {
+    #         "MatMul",
+    #         "Gemm",
+    #         "Softmax",
+    #         "LayerNormalization",
+    #         "Reshape",
+    #         "Transpose",
+    #         "ReduceMean",
+    #         "Div",
+    #         "Sqrt",
+    #     }:
+    #         print(f"{i:5d} {n.op_type:20s} {n.name}")
+    #         print("      in :", list(n.input))
+    #         print("      out:", list(n.output))
+
+    ############################################################################################################
+    ############################################################################################################
+    ############################################################################################################
+
+    from collections import defaultdict
+
+    import onnx
+
+    model = onnx.load("data/driving_supercombo.onnx")
+
+    groups = defaultdict(list)
+
+    for init in model.graph.initializer:
+        name = init.name
+        parts = name.split(".")
+
+        # Group by useful module depth
+        if "stages" in parts and "blocks" in parts:
+            si = parts.index("stages")
+            bi = parts.index("blocks")
+            key = ".".join(parts[: bi + 2])  # up to stages.X.blocks.Y
+        elif "transformer" in parts:
+            ti = parts.index("transformer")
+            key = ".".join(parts[: ti + 2])  # up to transformer.N
+        elif "hydra" in parts:
+            hi = parts.index("hydra")
+            key = ".".join(parts[: hi + 1])
+        elif "summarizer" in parts:
+            si = parts.index("summarizer")
+            key = ".".join(parts[: si + 1])
+        else:
+            key = ".".join(parts[:4])
+
+        groups[key].append((name, list(init.dims)))
+
+    for key in sorted(groups):
+        print("\n" + key)
+        for name, shape in groups[key]:
+            print("  ", name, shape)

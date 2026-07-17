@@ -1,6 +1,6 @@
-import torch
 from torch import nn
 
+from .config import Config
 from .pl_classifier import ClassifierNet
 
 # class MultiScaleBlock(nn.Module):
@@ -76,22 +76,9 @@ from .pl_classifier import ClassifierNet
 
 
 class MNISTClassifier(ClassifierNet):
-    def __init__(
-        self,
-        layer_depth=3,
-        kernel_depth=16,
-        learning_rate=5e-4,
-        weight_decay=0.0,
-        lr_scheduler_step_size=5,
-        lr_scheduler_gamma=0.1,
-    ):
 
-        super().__init__(
-            learning_rate,
-            weight_decay,
-            lr_scheduler_step_size,
-            lr_scheduler_gamma,
-        )
+    def __init__(self, config: Config):
+        super().__init__(config)
 
         self.net = nn.Sequential(
             nn.Conv2d(1, 128, kernel_size=3, stride=1, padding=1),

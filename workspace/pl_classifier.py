@@ -4,20 +4,20 @@ import lightning.pytorch as pl
 import torch
 from torch import nn, optim
 
+from .config import Config
+
 
 class ClassifierNet(pl.LightningModule):
     def __init__(
         self,
-        learning_rate: float = 5e-4,
-        weight_decay: float = 0.0,
-        lr_scheduler_step_size: int = 5,
-        lr_scheduler_gamma: float = 0.1,
+        config: Config,
     ):
         super().__init__()
-        self.save_hyperparameters()
+        self.save_hyperparameters(config.to_dict())
         self.criterion = nn.CrossEntropyLoss()
         self.optimizer = None
         self.scheduler = None
+        self.config = config
 
     @abstractmethod
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -66,14 +66,14 @@ class ClassifierNet(pl.LightningModule):
     def configure_optimizers(self):
         self.optimizer = optim.AdamW(
             self.parameters(),
-            lr=self.hparams.learning_rate,
-            weight_decay=self.hparams.weight_decay,
+            lr=self.config.training.optimizer.learning_rate,
+            weight_decay=self.config.training.optimizer.weight_decay,
         )
 
         self.scheduler = optim.lr_scheduler.StepLR(
             self.optimizer,
-            step_size=self.hparams.lr_scheduler_step_size,
-            gamma=self.hparams.lr_scheduler_gamma,
+            step_size=self.config.training.optimizer.scheduler.step_size,
+            gamma=self.config.training.optimizer.scheduler.gamma,
         )
 
         return {

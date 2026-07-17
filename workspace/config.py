@@ -28,7 +28,7 @@ class RuntimeConfig(StrictModel):
     pin_memory: bool = True
     num_workers: int = Field(default=0, ge=0)
     device: str = "cuda" if torch.cuda.is_available() else "cpu"
-    version: str = Field(default=torch.__version__)
+    version: str = str(torch.__version__)
 
     @model_validator(mode="after")
     def _normalize(self) -> "RuntimeConfig":
@@ -138,12 +138,18 @@ class Config(StrictModel):
         return self.model_copy(update=overrides, deep=True)
 
     def to_dict(self) -> dict[str, Any]:
-        return self.model_dump(mode="python")
+        return self.model_dump(mode="json")
 
     def to_json(self, path: str | Path) -> None:
         target = Path(path)
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(str(self), encoding="utf-8")
+        target.write_text(repr(self), encoding="utf-8")
+
+    def to_yaml(self, path: str | Path) -> None:
+        target = Path(path)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        cfg = OmegaConf.create(self.to_dict())
+        OmegaConf.save(cfg, target)
 
     def __str__(self) -> str:
         return "Config " + repr(self)
