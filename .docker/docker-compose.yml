@@ -1,0 +1,47 @@
+services:
+  deepdive-base:
+    image: deepdive-base:latest
+    build:
+      context: .
+      dockerfile: ./Dockerfile
+      args:
+        BASE_IMAGE: "nvidia/cuda:13.2.0-cudnn-devel-ubuntu24.04"
+        no_proxy: ${no_proxy}
+        NO_PROXY: ${NO_PROXY}
+        http_proxy: ${http_proxy}
+        HTTP_PROXY: ${HTTP_PROXY}
+        https_proxy: ${https_proxy}
+        HTTPS_PROXY: ${HTTPS_PROXY}
+
+
+    privileged: true
+    stdin_open: true
+    network_mode: host
+    ipc: host
+    tty: true
+
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities:
+                - gpu
+
+    environment:
+      DISPLAY: ${DISPLAY}
+      no_proxy: ${no_proxy}
+      NO_PROXY: ${NO_PROXY}
+      http_proxy: ${http_proxy}
+      HTTP_PROXY: ${HTTP_PROXY}
+      https_proxy: ${https_proxy}
+      HTTPS_PROXY: ${HTTPS_PROXY}
+
+    volumes:
+      # Workspace
+      - ..:/workspace:cached
+      # X11 socket
+      - /tmp/.X11-unix:/tmp/.X11-unix
+      # Datasets
+      - /mnt/ssd/Datasets:/mnt/ssd/Datasets:cached

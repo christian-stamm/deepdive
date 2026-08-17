@@ -1,5 +1,4 @@
 import json
-import os
 from pathlib import Path
 from typing import Any
 
@@ -23,24 +22,24 @@ class StrictModel(BaseModel):
         return Path(value).expanduser().resolve()
 
 
-class RuntimeConfig(StrictModel):
-    seed: int = 42
-    pin_memory: bool = True
-    num_workers: int = Field(default=0, ge=0)
-    device: str = "cuda" if torch.cuda.is_available() else "cpu"
-    version: str = str(torch.__version__)
+class LoggingConfig(StrictModel):
+    level: str = "INFO"
+    log_every_n_steps: PositiveInt = 10
 
-    @model_validator(mode="after")
-    def _normalize(self) -> "RuntimeConfig":
-        num_workers = self.num_workers
-        max_worker = max(0, (os.cpu_count() or 1) - 1)
-        self.num_workers = min(num_workers, max_worker)
-        return self
+
+class RuntimeConfig(StrictModel):
+    version: str = str(torch.__version__)
+    logging: LoggingConfig = Field(default_factory=LoggingConfig)
+    device: str = "cuda" if torch.cuda.is_available() else "cpu"
+    seed: int = 42
 
 
 class DataConfig(StrictModel):
-    rootdir: Path = Path("data/datasets")
-    dataset: str = "mnist"
+    rootdir: Path = Path("/mnt/ssd/Datasets/comma2k19/")
+    sample: str = "Chunk_1/b0c9d2329ad1606b|2018-07-27--06-03-57/3"
+    batch_size: PositiveInt = 2
+    num_workers: int = Field(default=1, ge=0)
+    pin_memory: bool = True
 
     @model_validator(mode="after")
     def _normalize(self) -> "DataConfig":
@@ -49,8 +48,12 @@ class DataConfig(StrictModel):
 
 
 class ModelConfig(StrictModel):
-    layer_depth: PositiveInt = Field(default=3, ge=1)
-    kernel_depth: PositiveInt = Field(default=64, ge=1)
+    num_world_states: PositiveInt = 32
+    dim_world_states: PositiveInt = 64
+    num_future_steps: PositiveInt = 64
+
+    traj_bias: PositiveFloat = 0.5
+    sense_bias: PositiveFloat = 0.5
 
 
 class SchedulerConfig(StrictModel):
@@ -65,7 +68,7 @@ class OptimizerConfig(StrictModel):
 
 
 class CheckpointConfig(StrictModel):
-    rootdir: Path = Path("data/checkpoints")
+    rootdir: Path = Path("res/checkpoints")
     interval: PositiveInt = 1
     restore: str = "last"
 
@@ -77,14 +80,8 @@ class CheckpointConfig(StrictModel):
 
 class TrainingConfig(StrictModel):
     max_epochs: PositiveInt = 10
-    batch_size: PositiveInt = Field(default=64, ge=1)
     optimizer: OptimizerConfig = Field(default_factory=OptimizerConfig)
     checkpoint: CheckpointConfig = Field(default_factory=CheckpointConfig)
-
-
-class LoggingConfig(StrictModel):
-    level: str = "INFO"
-    log_every_n_steps: PositiveInt = 10
 
 
 class Config(StrictModel):
@@ -94,7 +91,6 @@ class Config(StrictModel):
     model: ModelConfig = Field(default_factory=ModelConfig)
 
     training: TrainingConfig = Field(default_factory=TrainingConfig)
-    logging: LoggingConfig = Field(default_factory=LoggingConfig)
     runtime: RuntimeConfig = Field(default_factory=RuntimeConfig)
 
     @classmethod

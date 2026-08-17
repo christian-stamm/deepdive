@@ -1,0 +1,36 @@
+{
+	"name": "Deepdive",
+	"service": "deepdive-base",
+	"dockerComposeFile": "./.docker/docker-compose.yml",
+	"workspaceFolder": "/workspace",
+	"customizations": {
+		"vscode": {
+			"settings": 
+				{
+				"editor.formatOnSave": true,
+				"[python]": {
+					"editor.defaultFormatter": "ms-python.black-formatter",
+					"editor.codeActionsOnSave": {
+						"source.organizeImports": "always"
+					}
+				},
+				"isort.args": [
+					"--profile",
+					"black"
+				],
+				"python-envs.defaultEnvManager": "ms-python.python:venv"
+			},
+			"extensions": [
+				"ms-vscode.cpptools",
+				"ms-vscode.cpptools-extension-pack",
+				"ms-vscode.cmake-tools",
+				"llvm-vs-code-extensions.vscode-clangd",
+				"ms-python.python",
+				"ms-python.debugpy",
+				"ms-python.black-formatter",
+				"ms-python.isort",
+				"ms-toolsai.jupyter"
+			]
+		}
+	}
+}
