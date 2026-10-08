@@ -1,6 +1,6 @@
 import lightning.pytorch as pl
 import torch
-from torch.utils.data import DataLoader, random_split
+from torch.utils.data import DataLoader, Subset
 
 from .seqset import SequenceSet
 
@@ -19,7 +19,18 @@ class DrivingSet(pl.LightningDataModule):
         if not isinstance(dataset, SequenceSet):
             raise TypeError("dataset must be a SequenceSet")
 
-        trainset, valset, testset = random_split(dataset, ds_split)
+        total = len(dataset)
+        train_length = int(total * ds_split[0])
+        val_length = int(total * ds_split[1])
+        gap = dataset.seq_len
+        train_end = train_length
+        val_start = min(total, train_end + gap)
+        val_end = min(total, val_start + val_length)
+        test_start = min(total, val_end + gap)
+
+        trainset = Subset(dataset, range(0, train_end))
+        valset = Subset(dataset, range(val_start, val_end))
+        testset = Subset(dataset, range(test_start, total))
         self.trainset = trainset
         self.valset = valset
         self.testset = testset

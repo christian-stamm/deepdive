@@ -1,4 +1,5 @@
 from pathlib import Path
+from typing import Callable
 
 import numpy as np
 import torch
@@ -26,14 +27,19 @@ class CommaTransform(transforms.Compose):
         )
 
     def __call__(self, sample: dict) -> dict:
-        sample["images"] = self.image_tf(sample["images"])
+        sample["sensors"]["camera_imgs"] = self.image_tf(
+            sample["sensors"]["camera_imgs"]
+        )
         return sample
 
 
 class CommaDataset(Dataset):
 
     def __init__(
-        self, root: Path, future_steps: int = 5, transform=CommaTransform()
+        self,
+        root: Path,
+        future_steps: int = 5,
+        transform: Callable[[dict], dict] | None = CommaTransform(),
     ) -> None:
         self.root = root
         self.transform = transform
@@ -41,6 +47,8 @@ class CommaDataset(Dataset):
 
         self.frame_reader = FrameReader(str(root / "video.hevc"))
         self.stamps = self._load_glob_pose(root, "frame_times")
+        self.timestamp_scale = self._timestamp_scale(self.stamps)
+        self.stamps = self.stamps * self.timestamp_scale
 
         self.ecef_pos = self._load_glob_pose(root, "frame_positions").numpy()
         self.ecef_vel = self._load_glob_pose(root, "frame_velocities").numpy()
@@ -53,6 +61,19 @@ class CommaDataset(Dataset):
         self.radar_dist = self._load_radar_filtered(root, "CAN", "radar")
         self.steer_angle = self._load_proc_log(root, "CAN", "steering_angle")
 
+        self.telemetry = torch.cat(
+            [
+                self.ego_accel,
+                self.ego_gyro,
+                self.ego_speed,
+                self.radar_dist,
+                self.steer_angle,
+            ],
+            dim=-1,
+        )
+        self.telemetry_valid = torch.isfinite(self.telemetry)
+        self.telemetry = torch.nan_to_num(self.telemetry)
+
        
 
     def _load_series(self, file: Path) -> torch.Tensor:
@@ -61,12 +82,25 @@ class CommaDataset(Dataset):
 
         return torch.from_numpy(np.load(file)).float()
 
+    @staticmethod
+    def _timestamp_scale(stamps: torch.Tensor) -> float:
+        if stamps.numel() < 2:
+            return 1.0
+        median_delta = torch.diff(stamps.flatten()).abs().median().item()
+        if median_delta > 1e6:
+            return 1e-9
+        if median_delta > 1e3:
+            return 1e-6
+        if median_delta > 1.0:
+            return 1e-3
+        return 1.0
+
     def _load_glob_pose(self, root: Path, file: str) -> torch.Tensor:
         return self._load_series(root / "global_pose" / file)
 
     def _load_radar_filtered(self, root: Path, bus:str, group:str) -> torch.Tensor:
         radar_dist = self._load_proc_log(root, bus, group)
-        radar_nan_mask = np.isnan(radar_dist).any(dim=0).to(torch.bool)
+        radar_nan_mask = torch.isnan(radar_dist).any(dim=0)
 
         if radar_nan_mask.any():
             print("Warning: NaN values found in radar distance data. These will be filtered out.")
@@ -77,6 +111,7 @@ class CommaDataset(Dataset):
         basedir = root / "processed_log" / sensor / group
         values = self._load_series(basedir / "value")
         stamps = self._load_series(basedir / "t")
+        stamps = stamps * self.timestamp_scale
 
         if stamps.shape[0] != values.shape[0]:
             raise ValueError(
@@ -108,6 +143,13 @@ class CommaDataset(Dataset):
 
         return device_from_ecef(self.ecef_pos[idx], self.ecef_rot[idx], self.ecef_pos[lower_bound:upper_bound])
 
+    def _fetch_future_telemetry(self, idx: int) -> tuple[torch.Tensor, torch.Tensor]:
+        lower_bound = idx + 1
+        upper_bound = lower_bound + self.future_steps
+        values = self.telemetry[lower_bound:upper_bound]
+        valid = self.telemetry_valid[lower_bound:upper_bound]
+        return values, valid
+
     def _fetch_sensors(self, idx: int) -> dict:
        state = {
             "stamps": self.stamps[idx],
@@ -131,6 +173,9 @@ class CommaDataset(Dataset):
             "sensors": self._fetch_sensors(idx),
             "labels": self._fetch_labels(idx),
         }
+        future_telemetry, future_telemetry_valid = self._fetch_future_telemetry(idx)
+        sample["future_telemetry"] = future_telemetry
+        sample["future_telemetry_valid"] = future_telemetry_valid
 
         if self.transform:
             sample = self.transform(sample)
@@ -138,4 +183,4 @@ class CommaDataset(Dataset):
         return sample
 
     def __len__(self):
-        return max(0, self.stamps.size(0) - self.future_steps - 1)
+        return max(0, self.stamps.size(0) - self.future_steps)

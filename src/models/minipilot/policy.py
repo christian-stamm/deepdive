@@ -73,7 +73,11 @@ class DrivingPolicy(nn.Module):
             batch_first=True,
         )
 
-    def forward(self, world_tokens: torch.Tensor) -> torch.Tensor:
+    def forward(
+        self,
+        world_tokens: torch.Tensor,
+        intent_token: torch.Tensor | None = None,
+    ) -> torch.Tensor:
         """
         Args:
             world_tokens: Tensor of shape [Batch, Num_Tokens, Feature_Dim]
@@ -82,9 +86,9 @@ class DrivingPolicy(nn.Module):
             action: Tensor of shape [Batch, Action_Dim]
         """
 
-        query_token = self.prior_token.expand(
-            world_tokens.size(0), -1, -1
-        )  # [Batch, 1,Token_Dim]
+        query_token = self.prior_token.expand(world_tokens.size(0), -1, -1)
+        if intent_token is not None:
+            query_token = query_token + intent_token
 
         trajectory = self.planner(
             query=query_token,
@@ -93,3 +97,30 @@ class DrivingPolicy(nn.Module):
         )
 
         return trajectory  # for Batched (x, y) coordinates of n Future Steps
+
+
+class FutureSensorHead(nn.Module):
+    def __init__(self, token_dim: int, future_steps: int, output_dim: int):
+        super().__init__()
+        self.horizon_tokens = nn.Parameter(torch.randn(1, future_steps, token_dim))
+        self.attention = nn.MultiheadAttention(
+            token_dim,
+            num_heads=4,
+            dropout=0.1,
+            batch_first=True,
+        )
+        self.norm = nn.LayerNorm(token_dim)
+        self.output = nn.Sequential(
+            nn.Linear(token_dim, token_dim),
+            nn.GELU(),
+            nn.Linear(token_dim, output_dim),
+        )
+
+    def forward(self, world_tokens: torch.Tensor) -> torch.Tensor:
+        queries = self.horizon_tokens.expand(world_tokens.size(0), -1, -1)
+        predicted, _ = self.attention(
+            query=queries,
+            key=world_tokens,
+            value=world_tokens,
+        )
+        return self.output(self.norm(queries + predicted))

@@ -63,9 +63,10 @@ def main():
         mode="min",
     )
 
+    use_cuda = config.runtime.device.startswith("cuda") and torch.cuda.is_available()
     trainer = pl.Trainer(
-        accelerator="cuda",
-        devices=[0],
+        accelerator="gpu" if use_cuda else "cpu",
+        devices=1,
         max_epochs=config.training.max_epochs,
         log_every_n_steps=config.runtime.logging.log_every_n_steps,
         callbacks=[checkpointer],
@@ -73,7 +74,7 @@ def main():
         enable_progress_bar=True,
         enable_model_summary=False,
         logger=logger,
-        precision="16-mixed",
+        precision=config.runtime.precision if use_cuda else 32,
     )
 
     model = MiniPilot(config)
@@ -82,6 +83,11 @@ def main():
         config.model.num_future_steps,
         transform=None,
     )
+    if comset.telemetry.shape[-1] != config.model.telemetry_dim:
+        raise ValueError(
+            f"Configured telemetry_dim={config.model.telemetry_dim}, "
+            f"but dataset provides {comset.telemetry.shape[-1]} features"
+        )
     seqset = SequenceSet(
         comset,
         seq_len=config.model.num_future_steps,

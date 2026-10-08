@@ -1,10 +1,11 @@
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 from models.driving_model import DrivingModel
 from models.minipilot.encoder.image_encoder import VisionEncoder
 from models.minipilot.encoder.state_encoder import StateEncoder
-from models.minipilot.policy import DrivingPolicy
+from models.minipilot.policy import DrivingPolicy, FutureSensorHead
 from models.minipilot.world import TransitionModel
 from mp_config import Config
 
@@ -35,12 +36,16 @@ class MiniPilot(DrivingModel):
         )
 
         self.telemetry_enc = StateEncoder(
-            input_dim=13,
+            input_dim=config.model.telemetry_dim,
             token_dim=token_dim,
         )
 
         self.intent_encoder = StateEncoder(
             input_dim=3,
+            token_dim=token_dim,
+        )
+        self.dt_encoder = StateEncoder(
+            input_dim=1,
             token_dim=token_dim,
         )
 
@@ -58,6 +63,11 @@ class MiniPilot(DrivingModel):
             token_dim=token_dim,
             future_steps=config.model.num_future_steps,
         )
+        self.future_sensor_head = FutureSensorHead(
+            token_dim=token_dim,
+            future_steps=config.model.num_future_steps,
+            output_dim=config.model.telemetry_dim,
+        )
 
     def prior_tokens(self, batch_size: int) -> torch.Tensor:
         return self.world_tokens.unsqueeze(0).expand(batch_size, -1, -1)
@@ -73,6 +83,7 @@ class MiniPilot(DrivingModel):
         telemetry: torch.Tensor,
         intents: torch.Tensor,
         world_tokens: torch.Tensor = None,
+        delta_time: torch.Tensor = None,
     ) -> torch.Tensor:
         """
         Args:
@@ -89,6 +100,11 @@ class MiniPilot(DrivingModel):
         drive_intent_token = self.intent_encoder(intents)
         telemetry_tokens = self.telemetry_enc(telemetry)
         pointcloud_tokens = self.cloud_encoder(clouds)
+        if delta_time is None:
+            delta_time = telemetry.new_zeros(batch_size, 1)
+        elif delta_time.dim() == 1:
+            delta_time = delta_time.unsqueeze(-1)
+        dt_token = self.dt_encoder(delta_time)
         cameraimage_tokens = self.image_enc(images)[-1]  # Get the last stage features
         cameraimage_tokens = cameraimage_tokens.flatten(2, 3).permute(0, 2, 1)
 
@@ -108,19 +124,22 @@ class MiniPilot(DrivingModel):
         world_tokens, future_context_tokens = self.world_model(
             current_context_tokens,
             world_tokens,
+            delta_time=dt_token,
         )
 
-        trajectory = self.policy(world_tokens)
+        trajectory = self.policy(world_tokens, drive_intent_token)
+        future_sensor = self.future_sensor_head(world_tokens)
 
         return dict(
             future_trajectory=trajectory,
             updated_world_tokens=world_tokens,
             current_context_tokens=current_context_tokens,
             future_context_tokens=future_context_tokens,
+            future_sensor=future_sensor,
         )
 
     def _shared_step(self, mode: str, batch, batch_idx: int) -> torch.Tensor:
-        sensors, intents, labels = self._unpack_batch(batch)
+        sensors, intents, labels, future_telemetry, future_telemetry_valid = self._unpack_batch(batch)
         stamps, images, clouds, telemetry = sensors
 
         batch_size = stamps.size(0)
@@ -134,46 +153,71 @@ class MiniPilot(DrivingModel):
         clouds = clouds.transpose(0, 1)  # [SEQ, BATCH, ...]
         labels = labels.transpose(0, 1)  # [SEQ, BATCH, ...]
         intents = intents.transpose(0, 1)  # [SEQ, BATCH, ...]
+        future_telemetry = future_telemetry.transpose(0, 1)
+        future_telemetry_valid = future_telemetry_valid.transpose(0, 1)
 
-        estimated_context_tokens = None
         current_world_tokens = self.prior_tokens(batch_size=batch_size)
 
         step_losses = []
-        timeseries = zip(stamps, images, clouds, telemetry, intents, labels)
+        previous_stamps = None
+        timeseries = zip(
+            stamps,
+            images,
+            clouds,
+            telemetry,
+            intents,
+            labels,
+            future_telemetry,
+            future_telemetry_valid,
+        )
 
-        for idx, (stamp, image, cloud, state, intent, label) in enumerate(timeseries):
-            result_dict = self(image, cloud, state, intent, current_world_tokens)
-
-            traj_loss = sense_loss = None
+        for idx, (stamp, image, cloud, state, intent, label, sensor_target, sensor_valid) in enumerate(timeseries):
+            if previous_stamps is None:
+                delta_time = stamp.new_zeros(stamp.shape)
+            else:
+                delta_time = stamp - previous_stamps
+            result_dict = self(
+                image,
+                cloud,
+                state,
+                intent,
+                current_world_tokens,
+                delta_time,
+            )
 
             current_context_tokens = result_dict["current_context_tokens"]
             estimated_trajectory = result_dict["future_trajectory"]
             recorded_trajectory = label
 
-            traj_loss = self.criterion(
+            trajectory_error = F.smooth_l1_loss(
                 estimated_trajectory,
                 recorded_trajectory[:, :, :2],  # Only consider x, y for trajectory loss
+                reduction="none",
             )
-
-            if (
-                current_context_tokens is not None
-                and estimated_context_tokens is not None
-            ):
-                sense_loss = self.criterion(
-                    current_context_tokens, estimated_context_tokens
-                )
+            horizon_weight = torch.linspace(
+                1.0,
+                0.5,
+                trajectory_error.size(1),
+                device=trajectory_error.device,
+            ).view(1, -1, 1)
+            traj_loss = (trajectory_error * horizon_weight).mean()
 
             current_world_tokens = result_dict["updated_world_tokens"]
-            estimated_context_tokens = result_dict["future_context_tokens"]
+            sensor_prediction = result_dict["future_sensor"]
+            sensor_error = F.smooth_l1_loss(
+                sensor_prediction,
+                sensor_target,
+                reduction="none",
+            )
+            sensor_mask = sensor_valid.to(sensor_error.dtype)
+            sensor_loss = (sensor_error * sensor_mask).sum() / sensor_mask.sum().clamp_min(1.0)
 
-            if traj_loss and sense_loss:
-
-                step_loss = (
-                    self.config.model.traj_bias * traj_loss
-                    + self.config.model.sense_bias * sense_loss
-                )
-
-                step_losses.append(step_loss)
+            step_loss = (
+                self.config.model.traj_bias * traj_loss
+                + self.config.model.sensor_bias * sensor_loss
+            )
+            step_losses.append(step_loss)
+            previous_stamps = stamp
 
         normloss = torch.stack(step_losses).mean()
 
@@ -196,9 +240,27 @@ class MiniPilot(DrivingModel):
         return self._shared_step("val", batch, batch_idx)
 
     def predict_step(self, batch, batch_idx: int, dloader_idx: int = 0) -> torch.Tensor:
-        sensors, intents, labels = self._unpack_batch(batch)
+        sensors, intents, labels, _, _ = self._unpack_batch(batch)
         stamps, images, clouds, telemetry = sensors
-        return self(images, clouds, telemetry, intents, None)  # No prior world tokens for prediction
+        batch_size, sequence_length = stamps.shape[:2]
+        world_tokens = self.prior_tokens(batch_size)
+        outputs = []
+        previous_stamps = None
+        for step in range(sequence_length):
+            stamp = stamps[:, step]
+            delta_time = stamp.new_zeros(stamp.shape) if previous_stamps is None else stamp - previous_stamps
+            result = self(
+                images[:, step],
+                clouds[:, step],
+                telemetry[:, step],
+                intents[:, step],
+                world_tokens,
+                delta_time,
+            )
+            outputs.append(result["future_trajectory"])
+            world_tokens = result["updated_world_tokens"].detach()
+            previous_stamps = stamp
+        return torch.stack(outputs, dim=1)
 
     def unpack_sensors(self, sensors: dict[str, torch.Tensor]) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         stamps = sensors["stamps"]
@@ -219,4 +281,10 @@ class MiniPilot(DrivingModel):
 
     def _unpack_batch(self, batch: dict[str, torch.Tensor]):
         sensors = self.unpack_sensors(batch["sensors"])
-        return sensors, batch["intents"], batch["labels"]
+        return (
+            sensors,
+            batch["intents"],
+            batch["labels"],
+            batch["future_telemetry"],
+            batch["future_telemetry_valid"],
+        )

@@ -1,3 +1,5 @@
+from pathlib import Path
+
 from tqdm import tqdm
 import torch
 
@@ -71,6 +73,18 @@ def main():
 
     
     model = MiniPilot(config)
+    checkpoint = Path(config.training.checkpoint.restore)
+    if not checkpoint.is_absolute():
+        checkpoint = config.training.checkpoint.rootdir / checkpoint
+    if checkpoint.suffix != ".ckpt":
+        checkpoint = checkpoint.with_suffix(".ckpt")
+    if not checkpoint.exists():
+        raise FileNotFoundError(f"Checkpoint not found: {checkpoint}")
+    payload = torch.load(checkpoint, map_location="cpu", weights_only=False)
+    model.load_state_dict(payload["state_dict"])
+    device = torch.device(config.runtime.device if torch.cuda.is_available() else "cpu")
+    model.to(device).eval()
+
     comset = CommaDataset(
         config.data.rootdir / config.data.sample,
         config.model.num_future_steps,
@@ -80,44 +94,58 @@ def main():
     samples = DataLoader(comset, batch_size=1, shuffle=False)
     
     world_tokens = model.prior_tokens(batch_size=1)
-    for sample in tqdm(samples, desc="Processing samples"):
-        intents = sample["intents"]
-        sensors = sample["sensors"]
-        labels = sample["labels"][0]
+    reset_interval = config.model.num_future_steps
+    with torch.no_grad():
+        for sample_idx, sample in enumerate(tqdm(samples, desc="Processing samples")):
+            intents = sample["intents"].to(device)
+            sensors = {
+                key: value.to(device) for key, value in sample["sensors"].items()
+            }
+            labels = sample["labels"][0]
 
-        _, images, clouds, telemetry = model.unpack_sensors(sensors)
+            _, images, clouds, telemetry = model.unpack_sensors(sensors)
 
-        result = model(
-            images=images,
-            clouds=clouds,
-            telemetry=telemetry,
-            intents=intents,
-            world_tokens=world_tokens,
-        )
+            stamps = sensors["stamps"]
+            delta_time = torch.zeros_like(stamps)
+            if sample_idx:
+                delta_time = stamps - previous_stamp
+            result = model(
+                images=images,
+                clouds=clouds,
+                telemetry=telemetry,
+                intents=intents,
+                world_tokens=world_tokens,
+                delta_time=delta_time,
+            )
 
-        preds = result["future_trajectory"][0]
-        world_tokens = result["updated_world_tokens"]
+            preds = result["future_trajectory"][0]
+            world_tokens = result["updated_world_tokens"].detach()
+            previous_stamp = stamps
+            if (sample_idx + 1) % reset_interval == 0:
+                world_tokens = model.prior_tokens(batch_size=1)
 
-        height = labels[:, 2].unsqueeze(-1)
+            height = labels[:, 2].unsqueeze(-1).to(device)
 
-        preds = torch.cat((preds, height), dim=-1)
+            preds = torch.cat((preds, height), dim=-1)
        
-        label = labels.detach().contiguous().cpu().numpy()
-        pred = preds.detach().contiguous().cpu().numpy()
+            label = labels.detach().contiguous().cpu().numpy()
+            pred = preds.detach().contiguous().cpu().numpy()
 
-        image = (
-            images[0]
-            .permute(1, 2, 0)
-            .contiguous()
-            .cpu()
-            .numpy()
-        )
+            image = (
+                images[0]
+                .permute(1, 2, 0)
+                .contiguous()
+                .cpu()
+                .numpy()
+            )
+            image = (image[:, :, ::-1] * 255.0).clip(0, 255).astype(np.uint8)
         
-        draw_path(label[10:], image)
-        # draw_path(pred[10:], image)
+            draw_path(label[10:], image)
+            draw_path(pred[10:], image, color=(0, 0, 255))
 
-        cv2.imshow("image", image)
-        cv2.waitKey(0)
+            cv2.imshow("image", image)
+            if cv2.waitKey(1) & 0xFF == 27:
+                break
 
 if __name__ == "__main__":
     main()

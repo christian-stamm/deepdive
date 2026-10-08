@@ -89,6 +89,7 @@ class TransitionModel(nn.Module):
         self,
         context_tokens: torch.Tensor,
         world_tokens: torch.Tensor,
+        delta_time: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Forward pass through the transition model.
         Args:
@@ -99,6 +100,13 @@ class TransitionModel(nn.Module):
             next_sensor_tokens: (B, S, D) tensor of next sensor tokens
 
         """
+
+        if delta_time is not None:
+            if delta_time.dim() == 2:
+                delta_time = delta_time.unsqueeze(1)
+            context_tokens = torch.cat(
+                [context_tokens, delta_time], dim=1
+            )
 
         drive_context = torch.cat(
             [

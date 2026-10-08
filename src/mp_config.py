@@ -1,6 +1,6 @@
 import json
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import torch
 from omegaconf import OmegaConf
@@ -31,6 +31,7 @@ class RuntimeConfig(StrictModel):
     version: str = str(torch.__version__)
     logging: LoggingConfig = Field(default_factory=LoggingConfig)
     device: str = "cuda" if torch.cuda.is_available() else "cpu"
+    precision: Literal[16, 32, "16-mixed", "bf16-mixed"] = "16-mixed"
     seed: int = 42
 
 
@@ -51,9 +52,11 @@ class ModelConfig(StrictModel):
     num_world_states: PositiveInt = 32
     dim_world_states: PositiveInt = 64
     num_future_steps: PositiveInt = 256
+    telemetry_dim: PositiveInt = 13
 
     traj_bias: PositiveFloat = 0.5
     sense_bias: PositiveFloat = 0.5
+    sensor_bias: PositiveFloat = 0.1
 
 
 class SchedulerConfig(StrictModel):
