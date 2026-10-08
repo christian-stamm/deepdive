@@ -16,10 +16,15 @@ class MiniPilot(DrivingModel):
         token_dim = config.model.dim_world_states
         num_states = config.model.num_world_states
 
-        self.img_enc = VisionEncoder(
-            timm_model_cfg=dict(
-                model_name="fastvit_t8",
-                pretrained=False,
+        self.image_enc = VisionEncoder(
+            model_cfg=dict(
+                model_name="fastvit_t12.apple_dist_in1k",
+                pretrained=True,
+                pretrained_cfg_overlay={
+                    "file": "/workspace/res/fastvit_t12.safetensors",
+                },
+                features_only=True,
+                num_classes=0,
             ),
             stage_proj_dims=(None, None, None, token_dim),
         )
@@ -29,8 +34,8 @@ class MiniPilot(DrivingModel):
             token_dim=token_dim,
         )
 
-        self.egoveh_encoder = StateEncoder(
-            input_dim=19,
+        self.telemetry_enc = StateEncoder(
+            input_dim=13,
             token_dim=token_dim,
         )
 
@@ -57,66 +62,66 @@ class MiniPilot(DrivingModel):
     def prior_tokens(self, batch_size: int) -> torch.Tensor:
         return self.world_tokens.unsqueeze(0).expand(batch_size, -1, -1)
 
+    def train(self, mode: bool = True) -> None:
+        super(MiniPilot, self).train(mode)
+        self.image_enc.freeze(freezed=True)
+
     def forward(
         self,
         images: torch.Tensor,
         clouds: torch.Tensor,
-        ego_state: torch.Tensor,
-        ego_intent: torch.Tensor,
-        updated_world_tokens: torch.Tensor = None,
+        telemetry: torch.Tensor,
+        intents: torch.Tensor,
+        world_tokens: torch.Tensor = None,
     ) -> torch.Tensor:
         """
         Args:
             images: Tensor of shape [Batch, Channels, Height, Width]
             clouds: Tensor of shape [Batch, Num_Points, Point_Dim]
-            ego_state: Tensor of shape [Batch, State_Dim]
-            ego_intent: Tensor of shape [Batch, Intent_Dim]
+            telemetry: Tensor of shape [Batch, Telemetry_Dim]
+            intents: Tensor of shape [Batch, Intent_Dim]
             world_tokens: Tensor of shape [Batch, Num_World_States, Token_Dim] (optional)
         Returns:
             action: Tensor of shape [Batch, 3]
         """
 
         batch_size = images.size(0)
-        drive_intent_token = self.intent_encoder(ego_intent)
-        vehicle_state_token = self.egoveh_encoder(ego_state)
-        point_cloud_tokens = self.cloud_encoder(clouds)
-        camera_image_tokens = self.img_enc(images)[-1]  # Get the last stage features
-        camera_image_tokens = camera_image_tokens.flatten(2, 3).permute(0, 2, 1)
+        drive_intent_token = self.intent_encoder(intents)
+        telemetry_tokens = self.telemetry_enc(telemetry)
+        pointcloud_tokens = self.cloud_encoder(clouds)
+        cameraimage_tokens = self.image_enc(images)[-1]  # Get the last stage features
+        cameraimage_tokens = cameraimage_tokens.flatten(2, 3).permute(0, 2, 1)
 
-        if updated_world_tokens is None:
-            updated_world_tokens = self.prior_tokens(batch_size)
+        if world_tokens is None:
+            world_tokens = self.prior_tokens(batch_size)
 
         current_context_tokens = torch.cat(
             [
-                camera_image_tokens,
-                point_cloud_tokens,
-                vehicle_state_token,
+                cameraimage_tokens,
+                pointcloud_tokens,
+                telemetry_tokens,
                 drive_intent_token,
             ],
             dim=-2,
         )
 
-        updated_world_tokens, future_context_tokens = self.world_model(
+        world_tokens, future_context_tokens = self.world_model(
             current_context_tokens,
-            updated_world_tokens,
+            world_tokens,
         )
 
-        trajectory = self.policy(updated_world_tokens)
+        trajectory = self.policy(world_tokens)
 
         return dict(
             future_trajectory=trajectory,
-            updated_world_tokens=updated_world_tokens,
+            updated_world_tokens=world_tokens,
             current_context_tokens=current_context_tokens,
             future_context_tokens=future_context_tokens,
         )
 
     def _shared_step(self, mode: str, batch, batch_idx: int) -> torch.Tensor:
-        stamps = batch["stamps"]
-        states = batch["states"]
-        images = batch["images"]
-        clouds = batch["clouds"]
-        intents = batch["intents"]
-        labels = batch["labels"]
+        sensors, intents, labels = self._unpack_batch(batch)
+        stamps, images, clouds, telemetry = sensors
 
         batch_size = stamps.size(0)
         seq_length = stamps.size(1)
@@ -124,7 +129,7 @@ class MiniPilot(DrivingModel):
         # Original code assumed sequence-first iteration; keep the same
         # permutation logic so time becomes the leading dimension to iterate.
         stamps = stamps.transpose(0, 1)  # [SEQ, BATCH, ...]
-        states = states.transpose(0, 1)  # [SEQ, BATCH, ...]
+        telemetry = telemetry.transpose(0, 1)  # [SEQ, BATCH, ...]
         images = images.transpose(0, 1)  # [SEQ, BATCH, ...]
         clouds = clouds.transpose(0, 1)  # [SEQ, BATCH, ...]
         labels = labels.transpose(0, 1)  # [SEQ, BATCH, ...]
@@ -134,9 +139,9 @@ class MiniPilot(DrivingModel):
         current_world_tokens = self.prior_tokens(batch_size=batch_size)
 
         step_losses = []
-        timeseries = zip(stamps, states, images, clouds, intents, labels)
+        timeseries = zip(stamps, images, clouds, telemetry, intents, labels)
 
-        for idx, (stamp, state, image, cloud, intent, label) in enumerate(timeseries):
+        for idx, (stamp, image, cloud, state, intent, label) in enumerate(timeseries):
             result_dict = self(image, cloud, state, intent, current_world_tokens)
 
             traj_loss = sense_loss = None
@@ -147,7 +152,7 @@ class MiniPilot(DrivingModel):
 
             traj_loss = self.criterion(
                 estimated_trajectory,
-                recorded_trajectory,
+                recorded_trajectory[:, :, :2],  # Only consider x, y for trajectory loss
             )
 
             if (
@@ -191,7 +196,27 @@ class MiniPilot(DrivingModel):
         return self._shared_step("val", batch, batch_idx)
 
     def predict_step(self, batch, batch_idx: int, dloader_idx: int = 0) -> torch.Tensor:
-        stamps, states, images, clouds, intents, labels = tuple(batch.values())
-        return self(
-            images, clouds, states, intents, None
-        )  # No prior world tokens for prediction
+        sensors, intents, labels = self._unpack_batch(batch)
+        stamps, images, clouds, telemetry = sensors
+        return self(images, clouds, telemetry, intents, None)  # No prior world tokens for prediction
+
+    def unpack_sensors(self, sensors: dict[str, torch.Tensor]) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        stamps = sensors["stamps"]
+        images = sensors["camera_imgs"]
+        clouds = sensors["radar_clouds"]
+        telemetry = torch.cat(
+            [
+                sensors["ego_accel"],
+                sensors["ego_gyro"],
+                sensors["ego_speed"],
+                sensors["radar_dist"],
+                sensors["steer_angle"],
+            ],
+            dim=-1,
+        )
+
+        return stamps, images, clouds, telemetry
+
+    def _unpack_batch(self, batch: dict[str, torch.Tensor]):
+        sensors = self.unpack_sensors(batch["sensors"])
+        return sensors, batch["intents"], batch["labels"]

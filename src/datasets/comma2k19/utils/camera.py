@@ -1,5 +1,5 @@
 import numpy as np
-import orientation as orient
+from .orientation import rot_from_euler, rotations_from_quats
 
 FULL_FRAME_SIZE = (1164, 874)
 W, H = FULL_FRAME_SIZE[0], FULL_FRAME_SIZE[1]
@@ -40,7 +40,7 @@ def get_view_frame_from_road_frame(roll, pitch, yaw, height):
     # calibration pitch is currently defined
     # opposite to pitch in device frame
     pitch = -pitch
-    device_from_road = orient.rot_from_euler([roll, pitch, yaw]).dot(
+    device_from_road = rot_from_euler([roll, pitch, yaw]).dot(
         np.diag([1, -1, -1])
     )
     view_from_road = view_frame_from_device_frame.dot(device_from_road)
@@ -98,7 +98,7 @@ def device_from_ecef(pos_ecef, orientation_ecef, pt_ecef):
     # accepts single pt or array of pts
     input_shape = pt_ecef.shape
     pt_ecef = np.atleast_2d(pt_ecef)
-    ecef_from_device_rot = orient.rotations_from_quats(orientation_ecef)
+    ecef_from_device_rot = rotations_from_quats(orientation_ecef)
     device_from_ecef_rot = ecef_from_device_rot.T
     pt_ecef_rel = pt_ecef - pos_ecef
     pt_device = np.einsum("jk,ik->ij", device_from_ecef_rot, pt_ecef_rel)

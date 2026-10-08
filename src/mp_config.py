@@ -50,7 +50,7 @@ class DataConfig(StrictModel):
 class ModelConfig(StrictModel):
     num_world_states: PositiveInt = 32
     dim_world_states: PositiveInt = 64
-    num_future_steps: PositiveInt = 64
+    num_future_steps: PositiveInt = 256
 
     traj_bias: PositiveFloat = 0.5
     sense_bias: PositiveFloat = 0.5

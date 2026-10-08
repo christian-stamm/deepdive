@@ -52,26 +52,20 @@ class VisionPreprocessor(nn.Module):
 class VisionEncoder(nn.Module):
     def __init__(
         self,
-        timm_model_cfg: dict = dict(
-            model_name="fastvit_t12",
-            pretrained=False,
-            transforms=VisionPreprocessor(),
-        ),
+        model_cfg: dict,
         stage_proj_dims: tuple = (None, None, None, 128),
     ):
         super().__init__()
 
-        timm_model_cfg.pop("fork_feat", None)
-        tf = timm_model_cfg.pop("transforms", None)
+        tf = model_cfg.pop("transforms", None)
         self.preprocessor = tf if tf is not None else VisionPreprocessor()
-
-        self.encoder = timm.models.create_model(**timm_model_cfg, fork_feat=True)
+        self.backbone = timm.models.create_model(**model_cfg)
 
         sample = torch.randn(
             1, 3, 32, 32
         )  # Sample input to determine feature dimensions
 
-        features = self.encoder(self.preprocessor(sample))
+        features = self.backbone(self.preprocessor(sample))
         self.projections = nn.ModuleList()
 
         for stage, (tokens, proj_dim) in enumerate(zip(features, stage_proj_dims)):
@@ -82,6 +76,13 @@ class VisionEncoder(nn.Module):
             else:
                 self.projections.append(nn.Identity())
 
+    def freeze(self, freezed: bool = False) -> None:
+        if freezed:
+            self.backbone.eval()
+
+        for param in self.backbone.parameters():
+            param.requires_grad = not freezed
+
     def forward(self, x: torch.Tensor | Image.Image) -> torch.Tensor:
         """
         Args:
@@ -89,15 +90,17 @@ class VisionEncoder(nn.Module):
         Returns:
             features: Tensor of shape [Batch, Feature_Dim]
         """
+        encoder_param = next(self.backbone.parameters())
+
         output = dict()
 
         preprocessed = self.preprocessor(x)
-        encoder_param = next(self.encoder.parameters())
         preprocessed = preprocessed.to(
             device=encoder_param.device,
             dtype=encoder_param.dtype,
         )
-        features = self.encoder(preprocessed)
+
+        features = self.backbone(preprocessed)
 
         output = {}
         for stage, (tokens, project) in enumerate(zip(features, self.projections)):

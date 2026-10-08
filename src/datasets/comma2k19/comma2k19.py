@@ -2,15 +2,14 @@ from pathlib import Path
 
 import numpy as np
 import torch
-from matplotlib import image
 from torch.utils.data import Dataset
 from torchvision.transforms import Normalize, Resize, ToTensor, transforms
 
+from .utils.camera import device_from_ecef
+
 from .utils.framereader import FrameReader
-from .utils.mathops import (
+from .utils.timeseries import (
     consolidate_series,
-    ecef_to_ned,
-    ecef_to_traj,
     interpolate_series,
 )
 
@@ -43,36 +42,18 @@ class CommaDataset(Dataset):
         self.frame_reader = FrameReader(str(root / "video.hevc"))
         self.stamps = self._load_glob_pose(root, "frame_times")
 
-        ecef_pose = self._load_glob_pose(root, "frame_positions")
-        ecef_speed = self._load_glob_pose(root, "frame_velocities")
-        quat_orient = self._load_glob_pose(root, "frame_orientations")
+        self.ecef_pos = self._load_glob_pose(root, "frame_positions").numpy()
+        self.ecef_vel = self._load_glob_pose(root, "frame_velocities").numpy()
+        self.ecef_rot = self._load_glob_pose(root, "frame_orientations").numpy()
 
-        ego_pos = ecef_to_traj(ecef_pose, quat_orient)
-        ego_vel = ecef_to_ned(ecef_speed, quat_orient)
-        ego_accel = self._load_proc_log(root, "IMU", "accelerometer")
-        ego_gyro = self._load_proc_log(root, "IMU", "gyro")
+        self.ego_accel = self._load_proc_log(root, "IMU", "accelerometer")
+        self.ego_gyro = self._load_proc_log(root, "IMU", "gyro")
 
-        ego_speed = self._load_proc_log(root, "CAN", "speed")
-        radar_dist = self._load_proc_log(root, "CAN", "radar")
-        steer_angle = self._load_proc_log(root, "CAN", "steering_angle")
+        self.ego_speed = self._load_proc_log(root, "CAN", "speed")
+        self.radar_dist = self._load_radar_filtered(root, "CAN", "radar")
+        self.steer_angle = self._load_proc_log(root, "CAN", "steering_angle")
 
-        valid_radar_cols = [
-            col for col in range(radar_dist.shape[-1]) if col not in (3, 4)
-        ]
-
-        radar_dist = radar_dist[:, valid_radar_cols]
-        self.states = torch.cat(
-            [
-                ego_pos,
-                ego_vel,
-                ego_accel,
-                ego_gyro,
-                ego_speed,
-                radar_dist,
-                steer_angle,
-            ],
-            dim=-1,
-        )
+       
 
     def _load_series(self, file: Path) -> torch.Tensor:
         if not file.exists():
@@ -82,6 +63,15 @@ class CommaDataset(Dataset):
 
     def _load_glob_pose(self, root: Path, file: str) -> torch.Tensor:
         return self._load_series(root / "global_pose" / file)
+
+    def _load_radar_filtered(self, root: Path, bus:str, group:str) -> torch.Tensor:
+        radar_dist = self._load_proc_log(root, bus, group)
+        radar_nan_mask = np.isnan(radar_dist).any(dim=0).to(torch.bool)
+
+        if radar_nan_mask.any():
+            print("Warning: NaN values found in radar distance data. These will be filtered out.")
+
+        return radar_dist[:, ~radar_nan_mask]
 
     def _load_proc_log(self, root: Path, sensor: str, group: str) -> torch.Tensor:
         basedir = root / "processed_log" / sensor / group
@@ -107,7 +97,7 @@ class CommaDataset(Dataset):
         frame = frame.permute(2, 0, 1) / 255.0
         return frame
 
-    def _load_label(self, idx: int) -> torch.Tensor:
+    def _fetch_labels(self, idx: int) -> torch.Tensor:
         lower_bound = idx + 1
         upper_bound = lower_bound + self.future_steps
 
@@ -116,17 +106,30 @@ class CommaDataset(Dataset):
                 f"Index {idx} with future_steps {self.future_steps} (upperbound={upper_bound}) exceeds dataset length {len(self)}"
             )
 
-        traj = self.states[lower_bound:upper_bound, 0:2]
-        return traj
+        return device_from_ecef(self.ecef_pos[idx], self.ecef_rot[idx], self.ecef_pos[lower_bound:upper_bound])
+
+    def _fetch_sensors(self, idx: int) -> dict:
+       state = {
+            "stamps": self.stamps[idx],
+            "ecef_pos": self.ecef_pos[idx],
+            "ecef_vel": self.ecef_vel[idx],
+            "ecef_rot": self.ecef_rot[idx],
+            "ego_accel": self.ego_accel[idx],
+            "ego_gyro": self.ego_gyro[idx],
+            "ego_speed": self.ego_speed[idx],
+            "camera_imgs": self._load_frame(idx),
+            "radar_dist": self.radar_dist[idx],
+            "radar_clouds": torch.zeros(1, 3),  # Placeholder for radar point cloud data
+            "steer_angle": self.steer_angle[idx],
+       }
+
+       return state
 
     def __getitem__(self, idx: int):
         sample = {
-            "stamps": self.stamps[idx],
-            "states": self.states[idx],
-            "images": self._load_frame(idx),
-            "clouds": torch.zeros(1, 3),  # Placeholder for point cloud data
-            "intents": torch.zeros(3),  # Placeholder for intent data
-            "labels": self._load_label(idx),
+            "intents": torch.zeros(1, 3),  # Placeholder for intent data
+            "sensors": self._fetch_sensors(idx),
+            "labels": self._fetch_labels(idx),
         }
 
         if self.transform:

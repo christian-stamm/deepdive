@@ -33,8 +33,8 @@ def setup_logger(log_dir: str = "res/logs") -> TensorBoardLogger:
     )
 
     logger = TensorBoardLogger(
+        name="my_model",
         save_dir=log_dir,
-        name="deepdive",
     )
 
     return logger

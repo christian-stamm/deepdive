@@ -36,8 +36,9 @@ class DrivingModel(pl.LightningModule):
 
     @torch.no_grad()
     def predict_step(self, batch, batch_idx: int, dloader_idx: int = 0) -> torch.Tensor:
-        images, clouds, ego_state, ego_intent = batch
-        return self(images, clouds, ego_state, ego_intent)
+        raise NotImplementedError(
+            "Subclasses must implement the predict_step method."
+        )
 
     def configure_optimizers(self):
         self.optimizer = optim.AdamW(
