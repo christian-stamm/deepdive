@@ -38,8 +38,9 @@ class RuntimeConfig(StrictModel):
 class DataConfig(StrictModel):
     rootdir: Path = Path("/mnt/ssd/Datasets/comma2k19/")
     sample: str = "Chunk_1/b0c9d2329ad1606b|2018-07-27--06-03-57/3"
-    batch_size: PositiveInt = 2
-    num_workers: int = Field(default=1, ge=0)
+    all_drives: bool = True
+    batch_size: PositiveInt = 1
+    num_workers: int = Field(default=0, ge=0)
     pin_memory: bool = True
 
     @model_validator(mode="after")
@@ -49,14 +50,13 @@ class DataConfig(StrictModel):
 
 
 class ModelConfig(StrictModel):
-    num_world_states: PositiveInt = 32
-    dim_world_states: PositiveInt = 64
-    num_future_steps: PositiveInt = 256
+    num_world_states: PositiveInt = 64
+    dim_world_states: PositiveInt = 128
+    num_future_steps: PositiveInt = 64
     telemetry_dim: PositiveInt = 13
 
-    traj_bias: PositiveFloat = 0.5
-    sense_bias: PositiveFloat = 0.5
-    sensor_bias: PositiveFloat = 0.1
+    traj_bias: PositiveFloat = 0.7
+    sensor_bias: PositiveFloat = 0.3
 
 
 class SchedulerConfig(StrictModel):
@@ -82,7 +82,7 @@ class CheckpointConfig(StrictModel):
 
 
 class TrainingConfig(StrictModel):
-    max_epochs: PositiveInt = 10
+    max_epochs: PositiveInt = 100
     optimizer: OptimizerConfig = Field(default_factory=OptimizerConfig)
     checkpoint: CheckpointConfig = Field(default_factory=CheckpointConfig)
 

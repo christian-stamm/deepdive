@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 from collections import OrderedDict
-from typing import Any
+from bisect import bisect_right
+from pathlib import Path
+from typing import Any, Sequence
 
 from torch.utils.data import Dataset, default_collate
 
@@ -81,3 +83,65 @@ class SequenceSet(Dataset):
             self.cache.popitem(last=False)
 
         return default_collate(batch)
+
+
+class MultiDriveSequenceSet(Dataset):
+    """Expose independent sequence windows from multiple drive directories."""
+
+    def __init__(
+        self,
+        sources: Sequence[Dataset],
+        seq_len: int,
+        stride: int = 1,
+        roots: Sequence[Path] | None = None,
+    ) -> None:
+        super().__init__()
+
+        if not sources:
+            raise ValueError("sources must contain at least one drive")
+
+        self.datasets = []
+        valid_roots = []
+        for index, source in enumerate(sources):
+            if isinstance(source, SequenceSet):
+                sequence_set = source
+            elif len(source) < seq_len:
+                continue
+            else:
+                sequence_set = SequenceSet(source, seq_len, stride)
+            self.datasets.append(sequence_set)
+            if roots is not None:
+                valid_roots.append(roots[index])
+        self.seq_len = seq_len
+        self.stride = stride
+        self.roots = valid_roots
+
+        self._ends = []
+        total = 0
+        for dataset in self.datasets:
+            total += len(dataset)
+            self._ends.append(total)
+
+        if total == 0:
+            raise ValueError("No drive contains a complete sequence window")
+
+    def __len__(self) -> int:
+        return self._ends[-1]
+
+    def __getitem__(self, index: int) -> Any:
+        if index < 0:
+            index += len(self)
+        if index < 0 or index >= len(self):
+            raise IndexError("Index out of bounds")
+
+        drive_index = bisect_right(self._ends, index)
+        previous_end = 0 if drive_index == 0 else self._ends[drive_index - 1]
+        return self.datasets[drive_index][index - previous_end]
+
+    def drive_ranges(self) -> list[range]:
+        ranges = []
+        start = 0
+        for end in self._ends:
+            ranges.append(range(start, end))
+            start = end
+        return ranges
