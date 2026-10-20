@@ -32,6 +32,7 @@ class SequenceSet(Dataset):
         source: Dataset,
         seq_len: int,
         stride: int = 1,
+        cache_size: int | None = None,
     ) -> None:
         super().__init__()
 
@@ -41,10 +42,13 @@ class SequenceSet(Dataset):
             raise ValueError("seq_len must be greater than 0")
         if stride <= 0:
             raise ValueError("stride must be greater than 0")
+        if cache_size is not None and cache_size < 0:
+            raise ValueError("cache_size must be non-negative or None")
 
         self.source = source
         self.seq_len = seq_len
         self.stride = stride
+        self.cache_size = seq_len if cache_size is None else cache_size
         self.cache = OrderedDict()
 
         if len(self) < 1:
@@ -74,12 +78,14 @@ class SequenceSet(Dataset):
         batch = [None] * self.seq_len  # Preallocate list for efficiency
 
         for i in range(start, end):
-            if i not in self.cache:
-                self.cache[i] = self.source[i]
+            if self.cache_size == 0:
+                batch[i - start] = self.source[i]
+            else:
+                if i not in self.cache:
+                    self.cache[i] = self.source[i]
+                batch[i - start] = self.cache[i]
 
-            batch[i - start] = self.cache[i]
-
-        while self.seq_len < len(self.cache):
+        while self.cache_size < len(self.cache):
             self.cache.popitem(last=False)
 
         return default_collate(batch)
@@ -93,12 +99,16 @@ class MultiDriveSequenceSet(Dataset):
         sources: Sequence[Dataset],
         seq_len: int,
         stride: int = 1,
+        cache_size: int | None = None,
         roots: Sequence[Path] | None = None,
+        max_samples: int | None = None,
     ) -> None:
         super().__init__()
 
         if not sources:
             raise ValueError("sources must contain at least one drive")
+        if max_samples is not None and max_samples <= 0:
+            raise ValueError("max_samples must be greater than zero or None")
 
         self.datasets = []
         valid_roots = []
@@ -108,10 +118,12 @@ class MultiDriveSequenceSet(Dataset):
             elif len(source) < seq_len:
                 continue
             else:
-                sequence_set = SequenceSet(source, seq_len, stride)
+                sequence_set = SequenceSet(source, seq_len, stride, cache_size)
             self.datasets.append(sequence_set)
             if roots is not None:
                 valid_roots.append(roots[index])
+            if max_samples is not None and sum(len(item) for item in self.datasets) >= max_samples:
+                break
         self.seq_len = seq_len
         self.stride = stride
         self.roots = valid_roots
@@ -119,7 +131,7 @@ class MultiDriveSequenceSet(Dataset):
         self._ends = []
         total = 0
         for dataset in self.datasets:
-            total += len(dataset)
+            total = min(total + len(dataset), max_samples or total + len(dataset))
             self._ends.append(total)
 
         if total == 0:
@@ -145,3 +157,10 @@ class MultiDriveSequenceSet(Dataset):
             ranges.append(range(start, end))
             start = end
         return ranges
+
+    def release(self) -> None:
+        for dataset in self.datasets:
+            source = dataset.source
+            release = getattr(source, "store", None)
+            if release is not None:
+                release.release()

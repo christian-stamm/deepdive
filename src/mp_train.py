@@ -1,3 +1,4 @@
+from datetime import timedelta
 import logging
 
 import lightning.pytorch as pl
@@ -5,7 +6,7 @@ import torch
 from lightning.pytorch.callbacks import ModelCheckpoint
 from lightning.pytorch.loggers import TensorBoardLogger
 
-from datasets.comma2k19.comma2k19 import CommaDataset
+from datasets.comma2k19.comma2k19 import LazyCommaDataset, LazyDriveStore
 from datasets.driveset import DrivingSet
 from datasets.seqset import MultiDriveSequenceSet
 from models.minipilot.model import MiniPilot
@@ -56,8 +57,9 @@ def load_drives(config: Config) -> MultiDriveSequenceSet:
     if not roots:
         raise FileNotFoundError(f"No drive videos found under {config.data.rootdir}")
 
+    store = LazyDriveStore(config.model.num_future_steps)
     datasets = [
-        CommaDataset(root, config.model.num_future_steps, transform=None)
+        LazyCommaDataset(root, config.model.num_future_steps, store=store)
         for root in roots
     ]
     sequence_set = MultiDriveSequenceSet(
@@ -65,8 +67,12 @@ def load_drives(config: Config) -> MultiDriveSequenceSet:
         seq_len=config.model.num_future_steps,
         stride=1,
         roots=roots,
+        cache_size=0,
+        max_samples=config.data.max_samples,
     )
-    print(f"Loaded {len(roots)} drives with {len(sequence_set)} sequence windows.")
+    print(
+        f"Discovered {len(roots)} drives; indexed {len(sequence_set)} sequence windows."
+    )
     return sequence_set
 
 
@@ -103,6 +109,8 @@ def main():
         save_top_k=1,
         monitor="val_loss",
         mode="min",
+        every_n_train_steps=config.training.checkpoint.every_n_train_steps,
+        train_time_interval=timedelta(minutes=config.training.checkpoint.every_n_train_minutes),
     )
 
     checkpoint = Path(config.training.checkpoint.rootdir) / config.training.checkpoint.restore
@@ -130,12 +138,6 @@ def main():
     model = MiniPilot(config)
     checkpoint = restore_weights(model, checkpoint)
     sequence_set = load_drives(config)
-    if sequence_set.datasets[0].source.telemetry.shape[-1] != config.model.telemetry_dim:
-        raise ValueError(
-            f"Configured telemetry_dim={config.model.telemetry_dim}, "
-            f"but dataset provides {sequence_set.datasets[0].source.telemetry.shape[-1]} features"
-        )
-
     datamodule = DrivingSet(
         sequence_set,
         ds_split=(0.8, 0.15, 0.05),
@@ -144,17 +146,20 @@ def main():
         pin_memory=config.data.pin_memory,
     )
 
-    trainer.fit(model, datamodule=datamodule, ckpt_path=checkpoint)
+    try:
+        trainer.fit(model, datamodule=datamodule, ckpt_path=checkpoint)
 
-    metrics = trainer.validate(
-        model,
-        datamodule=datamodule,
-        ckpt_path="last",
-        verbose=False,
-        weights_only=False,
-    )
+        metrics = trainer.validate(
+            model,
+            datamodule=datamodule,
+            ckpt_path="last",
+            verbose=False,
+            weights_only=False,
+        )
 
-    print("Validation metrics:", metrics)
+        print("Validation metrics:", metrics)
+    finally:
+        sequence_set.release()
 
 
 if __name__ == "__main__":

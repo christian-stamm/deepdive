@@ -39,8 +39,9 @@ class DataConfig(StrictModel):
     rootdir: Path = Path("/mnt/ssd/Datasets/comma2k19/")
     sample: str = "Chunk_1/b0c9d2329ad1606b|2018-07-27--06-03-57/3"
     all_drives: bool = True
+    max_samples: PositiveInt | None = 50000
     batch_size: PositiveInt = 1
-    num_workers: int = Field(default=0, ge=0)
+    num_workers: int = Field(default=1, ge=0)
     pin_memory: bool = True
 
     @model_validator(mode="after")
@@ -53,7 +54,7 @@ class ModelConfig(StrictModel):
     num_world_states: PositiveInt = 64
     dim_world_states: PositiveInt = 128
     num_future_steps: PositiveInt = 64
-    telemetry_dim: PositiveInt = 13
+    telemetry_dim: PositiveInt = 15
 
     traj_bias: PositiveFloat = 0.7
     sensor_bias: PositiveFloat = 0.3
@@ -74,6 +75,8 @@ class CheckpointConfig(StrictModel):
     rootdir: Path = Path("res/checkpoints")
     interval: PositiveInt = 1
     restore: str = "last"
+    every_n_train_minutes: PositiveInt = 30
+    every_n_train_steps: PositiveInt = 1000
 
     @model_validator(mode="after")
     def _normalize(self) -> "CheckpointConfig":

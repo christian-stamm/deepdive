@@ -1,18 +1,14 @@
 from pathlib import Path
+import pprint
 from typing import Callable
-
+import cv2
 import numpy as np
 import torch
 from torch.utils.data import Dataset
 from torchvision.transforms import Normalize, Resize, ToTensor, transforms
 
 from .utils.camera import device_from_ecef
-
 from .utils.framereader import FrameReader
-from .utils.timeseries import (
-    consolidate_series,
-    interpolate_series,
-)
 
 
 class CommaTransform(transforms.Compose):
@@ -33,154 +29,126 @@ class CommaTransform(transforms.Compose):
         return sample
 
 
+class Sensor:
+
+    def __init__(self, name: str, stamps: np.ndarray, values: np.ndarray):
+        self.name = name
+        self.stamps = stamps
+        self.values = values
+
+    @staticmethod
+    def load(path: Path):
+        data = np.load(path, mmap_mode="r")
+        if data.ndim == 1:
+            data = data[:, np.newaxis]
+        return data
+
+    @classmethod
+    def from_file(cls, path: Path):
+        stamps = Sensor.load(path / "t")
+        values = Sensor.load(path / "value")
+        return cls(path.stem, stamps, values)
+
+    def __getitem__(self, idx: int | slice | np.ndarray):
+        stamps = self.stamps[idx]
+        values = self.values[idx]
+        return np.concatenate([stamps, values], axis=-1)
+
+
+class RecordInfo:
+
+    def __init__(self, path: Path):
+        if not path.is_dir():
+            path = path.parent
+
+        self.path = path
+        self.stamps = Sensor.load(path / "global_pose/frame_times")
+
+    def __len__(self):
+        return len(self.stamps)
+
+    @property
+    def chunk(self):
+        return int(self.path.parts[-3].split("_")[-1])
+
+    @property
+    def route(self):
+        return self.path.parts[-2]
+
+    @property
+    def dongle(self):
+        return self.route.split("|")[0]
+
+    @property
+    def stamp(self):
+        return self.route.split("|")[1]
+
+    @property
+    def segment(self):
+        return int(self.path.parts[-1])
+
+
+class Recording:
+
+    def __init__(self, info: RecordInfo):
+        self.info = info
+
+        reader = FrameReader(str(info.path / "video.hevc"))
+        images = reader.get(0, len(info), pix_fmt="rgb24")
+        self.camera = Sensor("camera", info.stamps, np.stack(images))
+        del reader, images
+
+        pos = Sensor.load(info.path / "global_pose/frame_positions")
+        vel = Sensor.load(info.path / "global_pose/frame_velocities")
+        orient = Sensor.load(info.path / "global_pose/frame_orientations")
+        self.positions = Sensor("position", info.stamps, pos)
+        self.velocities = Sensor("velocity", info.stamps, vel)
+        self.orientations = Sensor("orientation", info.stamps, orient)
+        del pos, vel, orient
+
+        self.accel = Sensor.from_file(info.path / "processed_log/IMU/accelerometer")
+        self.gyro = Sensor.from_file(info.path / "processed_log/IMU/gyro")
+        self.speed = Sensor.from_file(info.path / "processed_log/CAN/speed")
+        self.radar = Sensor.from_file(info.path / "processed_log/CAN/radar")
+        self.steer = Sensor.from_file(info.path / "processed_log/CAN/steering_angle")
+
+
 class CommaDataset(Dataset):
 
     def __init__(
         self,
         root: Path,
-        future_steps: int = 5,
+        sample_rate: float = 20,
+        future_steps: int = 60,
         transform: Callable[[dict], dict] | None = CommaTransform(),
     ) -> None:
         self.root = root
         self.transform = transform
+        self.sample_rate = sample_rate
         self.future_steps = future_steps
-
-        self.frame_reader = FrameReader(str(root / "video.hevc"))
-        self.stamps = self._load_glob_pose(root, "frame_times")
-        self.timestamp_scale = self._timestamp_scale(self.stamps)
-        self.stamps = self.stamps * self.timestamp_scale
-
-        self.ecef_pos = self._load_glob_pose(root, "frame_positions").numpy()
-        self.ecef_vel = self._load_glob_pose(root, "frame_velocities").numpy()
-        self.ecef_rot = self._load_glob_pose(root, "frame_orientations").numpy()
-
-        self.ego_accel = self._load_proc_log(root, "IMU", "accelerometer")
-        self.ego_gyro = self._load_proc_log(root, "IMU", "gyro")
-
-        self.ego_speed = self._load_proc_log(root, "CAN", "speed")
-        self.radar_dist = self._load_radar_filtered(root, "CAN", "radar")
-        self.steer_angle = self._load_proc_log(root, "CAN", "steering_angle")
-
-        self.telemetry = torch.cat(
-            [
-                self.ego_accel,
-                self.ego_gyro,
-                self.ego_speed,
-                self.radar_dist,
-                self.steer_angle,
-            ],
-            dim=-1,
-        )
-        self.telemetry_valid = torch.isfinite(self.telemetry)
-        self.telemetry = torch.nan_to_num(self.telemetry)
-
-       
-
-    def _load_series(self, file: Path) -> torch.Tensor:
-        if not file.exists():
-            raise FileNotFoundError("Could not load Comma Series File: ", str(file))
-
-        return torch.from_numpy(np.load(file)).float()
-
-    @staticmethod
-    def _timestamp_scale(stamps: torch.Tensor) -> float:
-        if stamps.numel() < 2:
-            return 1.0
-        median_delta = torch.diff(stamps.flatten()).abs().median().item()
-        if median_delta > 1e6:
-            return 1e-9
-        if median_delta > 1e3:
-            return 1e-6
-        if median_delta > 1.0:
-            return 1e-3
-        return 1.0
-
-    def _load_glob_pose(self, root: Path, file: str) -> torch.Tensor:
-        return self._load_series(root / "global_pose" / file)
-
-    def _load_radar_filtered(self, root: Path, bus:str, group:str) -> torch.Tensor:
-        radar_dist = self._load_proc_log(root, bus, group)
-        radar_nan_mask = torch.isnan(radar_dist).any(dim=0)
-
-        if radar_nan_mask.any():
-            print("Warning: NaN values found in radar distance data. These will be filtered out.")
-
-        return radar_dist[:, ~radar_nan_mask]
-
-    def _load_proc_log(self, root: Path, sensor: str, group: str) -> torch.Tensor:
-        basedir = root / "processed_log" / sensor / group
-        values = self._load_series(basedir / "value")
-        stamps = self._load_series(basedir / "t")
-        stamps = stamps * self.timestamp_scale
-
-        if stamps.shape[0] != values.shape[0]:
-            raise ValueError(
-                f"Mismatch in number of timestamps and values for {sensor}/{group}: "
-                f"{stamps.shape[0]} timestamps vs {values.shape[0]} values"
-            )
-
-        if values.ndim == 1:
-            values = values.unsqueeze(-1)
-
-        stamps, values = consolidate_series(stamps, values)
-        return interpolate_series(self.stamps.flatten(), stamps.flatten(), values)
-
-    def _load_frame(self, idx: int) -> torch.Tensor:
-        frame = self.frame_reader.get(idx, 1, pix_fmt="rgb24").pop(0)
-        frame = np.array(frame)
-        frame = torch.from_numpy(frame).float()
-        frame = frame.permute(2, 0, 1) / 255.0
-        return frame
-
-    def _fetch_labels(self, idx: int) -> torch.Tensor:
-        lower_bound = idx + 1
-        upper_bound = lower_bound + self.future_steps
-
-        if self.stamps.size(0) < upper_bound:
-            raise IndexError(
-                f"Index {idx} with future_steps {self.future_steps} (upperbound={upper_bound}) exceeds dataset length {len(self)}"
-            )
-
-        return device_from_ecef(self.ecef_pos[idx], self.ecef_rot[idx], self.ecef_pos[lower_bound:upper_bound])
-
-    def _fetch_future_telemetry(self, idx: int) -> tuple[torch.Tensor, torch.Tensor]:
-        lower_bound = idx + 1
-        upper_bound = lower_bound + self.future_steps
-        values = self.telemetry[lower_bound:upper_bound]
-        valid = self.telemetry_valid[lower_bound:upper_bound]
-        return values, valid
-
-    def _fetch_sensors(self, idx: int) -> dict:
-       state = {
-            "stamps": self.stamps[idx],
-            "ecef_pos": self.ecef_pos[idx],
-            "ecef_vel": self.ecef_vel[idx],
-            "ecef_rot": self.ecef_rot[idx],
-            "ego_accel": self.ego_accel[idx],
-            "ego_gyro": self.ego_gyro[idx],
-            "ego_speed": self.ego_speed[idx],
-            "camera_imgs": self._load_frame(idx),
-            "radar_dist": self.radar_dist[idx],
-            "radar_clouds": torch.zeros(1, 3),  # Placeholder for radar point cloud data
-            "steer_angle": self.steer_angle[idx],
-       }
-
-       return state
+        self.records = [RecordInfo(path) for path in self.root.rglob("**/video.hevc")]
 
     def __getitem__(self, idx: int):
-        sample = {
-            "intents": torch.zeros(1, 3),  # Placeholder for intent data
-            "sensors": self._fetch_sensors(idx),
-            "labels": self._fetch_labels(idx),
-        }
-        future_telemetry, future_telemetry_valid = self._fetch_future_telemetry(idx)
-        sample["future_telemetry"] = future_telemetry
-        sample["future_telemetry_valid"] = future_telemetry_valid
+        recinfo = self.records[idx]
 
-        if self.transform:
-            sample = self.transform(sample)
+        anchors = np.arange(len(recinfo) - self.future_steps)
+        horizon = np.arange(self.future_steps)
+        windows = anchors[:, None] + horizon[None, :]
+        windows = windows.astype(np.float32)
+        windows *= 1.0 / self.sample_rate
 
-        return sample
+        frames = recinfo.stamps.squeeze(-1)
+        indices = np.searchsorted(frames, windows.ravel(), side="right")
+        indices = indices.reshape(windows.shape) - 1
+
+        print("indices: ", indices.shape, indices[0, :10])
+
+        # recording = Recording(recinfo)
+        # positions = recording.positions[windows]
+        # velocities = recording.velocities[windows]
+        # orientations = recording.orientations[windows]
+
+        return windows
 
     def __len__(self):
-        return max(0, self.stamps.size(0) - self.future_steps)
+        return len(self.records)

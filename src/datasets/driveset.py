@@ -34,8 +34,9 @@ class DrivingSet(pl.LightningDataModule):
         for drive_range in ranges:
             start = drive_range.start
             total = len(drive_range)
-            gap = dataset.seq_len
             split_total = sum(ds_split)
+            requested_gap = dataset.seq_len
+            gap = requested_gap if total >= 2 * requested_gap + 3 else 0
             available = max(0, total - 2 * gap)
             train_length = int(available * ds_split[0] / split_total)
             val_length = int(available * ds_split[1] / split_total)

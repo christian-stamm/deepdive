@@ -72,9 +72,9 @@ class MiniPilot(DrivingModel):
     def prior_tokens(self, batch_size: int) -> torch.Tensor:
         return self.world_tokens.unsqueeze(0).expand(batch_size, -1, -1)
 
-    def train(self, mode: bool = True) -> None:
-        super(MiniPilot, self).train(mode)
-        self.image_enc.freeze(freezed=True)
+    # def train(self, mode: bool = True) -> None:
+    #     super(MiniPilot, self).train(mode)
+    #     self.image_enc.freeze(freezed=True)
 
     def forward(
         self,
@@ -194,12 +194,13 @@ class MiniPilot(DrivingModel):
                 recorded_trajectory[:, :, :2],  # Only consider x, y for trajectory loss
                 reduction="none",
             )
-            horizon_weight = torch.linspace(
-                1.0,
-                0.5,
-                trajectory_error.size(1),
-                device=trajectory_error.device,
-            ).view(1, -1, 1)
+            # horizon_weight = torch.linspace(
+            #     1.0,
+            #     0.5,
+            #     trajectory_error.size(1),
+            #     device=trajectory_error.device,
+            # ).view(1, -1, 1)
+            horizon_weight = torch.ones_like(trajectory_error)  # Uniform weight for all time steps
             traj_loss = (trajectory_error * horizon_weight).mean()
 
             current_world_tokens = result_dict["updated_world_tokens"]

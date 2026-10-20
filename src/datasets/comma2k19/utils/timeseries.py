@@ -1,6 +1,7 @@
 import torch
 
-def consolidate_series(
+
+def sequential_series(
     times: torch.Tensor, values: torch.Tensor
 ) -> tuple[torch.Tensor, torch.Tensor]:
     order = torch.argsort(times)

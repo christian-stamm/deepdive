@@ -76,12 +76,12 @@ class VisionEncoder(nn.Module):
             else:
                 self.projections.append(nn.Identity())
 
-    def freeze(self, freezed: bool = False) -> None:
-        if freezed:
-            self.backbone.eval()
+    # def freeze(self, freezed: bool = False) -> None:
+    #     if freezed:
+    #         self.backbone.eval()
 
-        for param in self.backbone.parameters():
-            param.requires_grad = not freezed
+    #     for param in self.backbone.parameters():
+    #         param.requires_grad = not freezed
 
     def forward(self, x: torch.Tensor | Image.Image) -> torch.Tensor:
         """
