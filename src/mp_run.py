@@ -91,8 +91,8 @@ def main():
     print(f"Dataset size: {len(ds)} recordings")
 
     for idx in range(len(ds)):
-        sample = ds[idx]
-        print("loaded windows: ", sample.shape)
+        windows = ds[idx]
+        print("loaded context windows: ", windows.shape)
 
     # videos = glob.glob(
     #     os.path.join(config.data.rootdir, "**", "*.hevc"),

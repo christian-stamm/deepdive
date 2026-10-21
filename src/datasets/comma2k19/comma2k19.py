@@ -1,32 +1,10 @@
 from pathlib import Path
-import pprint
-from typing import Callable
-import cv2
 import numpy as np
 import torch
 from torch.utils.data import Dataset
-from torchvision.transforms import Normalize, Resize, ToTensor, transforms
 
 from .utils.camera import device_from_ecef
 from .utils.framereader import FrameReader
-
-
-class CommaTransform(transforms.Compose):
-    def __init__(self, image_size: torch.Size = torch.Size([512, 256])):
-        self.image_size = image_size
-        self.image_tf = transforms.Compose(
-            [
-                ToTensor(),
-                Resize(image_size),
-                Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-            ]
-        )
-
-    def __call__(self, sample: dict) -> dict:
-        sample["sensors"]["camera_imgs"] = self.image_tf(
-            sample["sensors"]["camera_imgs"]
-        )
-        return sample
 
 
 class Sensor:
@@ -36,23 +14,53 @@ class Sensor:
         self.stamps = stamps
         self.values = values
 
+    def collect_interp(self, stamps: np.ndarray):
+        upper = np.searchsorted(self.stamps, stamps, side="left")
+        upper = np.clip(upper, 1, len(self.stamps) - 1)
+        lower = upper - 1
+
+        t0 = self.stamps[lower]
+        v0 = self.values[lower]
+
+        t1 = self.stamps[upper]
+        v1 = self.values[upper]
+
+        alpha = (stamps - t0) / (t1 - t0)
+        alpha = alpha[..., None]
+
+        return v0 + alpha * (v1 - v0)
+
+    def collect_causal(self, stamps: np.ndarray):
+        fltstamps = stamps.ravel()
+        indices = np.searchsorted(self.stamps, fltstamps, side="right") - 1
+
+        valid = indices >= 0
+        indices = np.clip(indices, 0, len(self) - 1)
+        valid = valid.reshape(stamps.shape)
+
+        return np.where(valid[..., None], self.values[indices], np.nan)
+
     @staticmethod
     def load(path: Path):
-        data = np.load(path, mmap_mode="r")
-        if data.ndim == 1:
-            data = data[:, np.newaxis]
-        return data
+        return np.load(path, mmap_mode="r")
 
     @classmethod
     def from_file(cls, path: Path):
         stamps = Sensor.load(path / "t")
         values = Sensor.load(path / "value")
+
+        if values.ndim == 1:
+            values = values[:, None]
+
         return cls(path.stem, stamps, values)
 
     def __getitem__(self, idx: int | slice | np.ndarray):
         stamps = self.stamps[idx]
         values = self.values[idx]
         return np.concatenate([stamps, values], axis=-1)
+
+    def __len__(self):
+        return self.stamps.shape[0]
 
 
 class RecordInfo:
@@ -112,43 +120,72 @@ class Recording:
         self.radar = Sensor.from_file(info.path / "processed_log/CAN/radar")
         self.steer = Sensor.from_file(info.path / "processed_log/CAN/steering_angle")
 
+    def get_chunks(self, history: float, horizon: float, rate: float):
+        dt = 1.0 / rate
+        t0 = self.info.stamps[0]
+        tN = self.info.stamps[-1]
+
+        anchors = np.arange(t0 + history, tN - horizon, dt)
+        trange = np.arange(-history, horizon, dt)
+
+        windows = anchors[:, None] + trange[None, :]
+        windows = windows.astype(np.float32)
+
+        split = int(history / dt)
+        context = windows[:, :split]
+        future = windows[:, split:]
+
+        return context, future
+
+    def get_input(self, stamps: np.ndarray):
+        accel = self.accel.collect_causal(stamps)
+        gyro = self.gyro.collect_causal(stamps)
+        speed = self.speed.collect_causal(stamps)
+        radar = self.radar.collect_causal(stamps)
+        steer = self.steer.collect_causal(stamps)
+        camera = self.camera.collect_causal(stamps)
+
+        return {
+            "accel": torch.from_numpy(accel),
+            "gyro": torch.from_numpy(gyro),
+            "speed": torch.from_numpy(speed),
+            "radar": torch.from_numpy(radar),
+            "steer": torch.from_numpy(steer),
+            "camera": torch.from_numpy(camera),
+        }
+
+    def get_label(self, stamps: np.ndarray):
+        pos = self.positions.collect_interp(stamps)
+        speed = self.speed.collect_interp(stamps)
+        steer = self.steer.collect_interp(stamps)
+
+        return {
+            "position": torch.from_numpy(pos),
+            "speed": torch.from_numpy(speed),
+            "steer": torch.from_numpy(steer),
+        }
+
 
 class CommaDataset(Dataset):
 
     def __init__(
         self,
         root: Path,
-        sample_rate: float = 20,
-        future_steps: int = 60,
-        transform: Callable[[dict], dict] | None = CommaTransform(),
+        rate: float = 20,
+        history: float = 0.5,
+        horizon: float = 3.0,
     ) -> None:
         self.root = root
-        self.transform = transform
-        self.sample_rate = sample_rate
-        self.future_steps = future_steps
+        self.rate = rate
+        self.history = history
+        self.horizon = horizon
         self.records = [RecordInfo(path) for path in self.root.rglob("**/video.hevc")]
 
     def __getitem__(self, idx: int):
-        recinfo = self.records[idx]
+        recording = Recording(self.records[idx])
 
-        anchors = np.arange(len(recinfo) - self.future_steps)
-        horizon = np.arange(self.future_steps)
-        windows = anchors[:, None] + horizon[None, :]
-        windows = windows.astype(np.float32)
-        windows *= 1.0 / self.sample_rate
-
-        frames = recinfo.stamps.squeeze(-1)
-        indices = np.searchsorted(frames, windows.ravel(), side="right")
-        indices = indices.reshape(windows.shape) - 1
-
-        print("indices: ", indices.shape, indices[0, :10])
-
-        # recording = Recording(recinfo)
-        # positions = recording.positions[windows]
-        # velocities = recording.velocities[windows]
-        # orientations = recording.orientations[windows]
-
-        return windows
+        for sample in recording.sample(self.history, self.horizon, self.rate):
+            yield sample
 
     def __len__(self):
         return len(self.records)
